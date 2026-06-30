@@ -10,7 +10,8 @@ Group=vocab
 EnvironmentFile=/etc/vocab-notebook.env
 # 앱은 localhost:8080에만 바인딩하고, 외부 노출은 Caddy가 담당
 Environment=BIND_ADDR=127.0.0.1:8080
-Environment=COREDB_NODE=127.0.0.1:9042
+# CoreDB HTTP /query 엔드포인트 (coredb.service 가 띄우는 포트)
+Environment=COREDB_NODE=127.0.0.1:9142
 WorkingDirectory=/opt/vocab-notebook
 ExecStart=/usr/local/bin/vocab-notebook
 Restart=on-failure

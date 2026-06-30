@@ -41,7 +41,7 @@ gcloud compute instances create "$VM_NAME" \
   --disk "name=$DATA_DISK_NAME,device-name=vocabdata,mode=rw,auto-delete=no" \
   --tags "$TAG"
 
-# 3) 방화벽: HTTP(80)/HTTPS(443)만 허용. CoreDB 9042는 외부에 열지 않음(localhost 전용).
+# 3) 방화벽: HTTP(80)/HTTPS(443)만 허용. CoreDB HTTP 포트(9142)는 외부에 열지 않음(localhost 전용).
 if ! gcloud compute firewall-rules describe vocab-allow-web >/dev/null 2>&1; then
   gcloud compute firewall-rules create vocab-allow-web \
     --direction INGRESS --action ALLOW \

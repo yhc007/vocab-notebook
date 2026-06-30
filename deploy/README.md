@@ -8,7 +8,7 @@ CoreDB는 로컬 디스크에 상태를 저장하는 상시 서버라 Cloud Run 
 | --- | --- | --- |
 | `provision-vm.sh` | VM + 영구 디스크 + 방화벽 생성 | 로컬(gcloud) |
 | `setup-vm.sh` | 디스크 마운트, Rust/CoreDB/앱 빌드, 서비스 등록 | VM 내부(sudo) |
-| `coredb.service` | CoreDB systemd 유닛 (127.0.0.1:9042) | VM |
+| `coredb.service` | CoreDB systemd 유닛 (HTTP /query, 127.0.0.1:9142) | VM |
 | `vocab-notebook.service` | 앱 systemd 유닛 (127.0.0.1:8080) | VM |
 | `Caddyfile` | HTTPS 리버스 프록시 | VM |
 | `backup-coredb.sh` | 데이터 디스크 내 일일 백업 | VM(cron) |
@@ -32,7 +32,7 @@ PROJECT=YOUR_PROJECT_ID ZONE=us-central1-a ./provision-vm.sh
 ```
 
 기본값: e2-small, 부팅 20GB, 데이터 디스크 30GB(pd-balanced), 방화벽 80/443.
-CoreDB 9042 포트는 외부에 열지 않는다(앱이 localhost로만 접근).
+CoreDB HTTP 포트(9142)는 외부에 열지 않는다(앱이 localhost로만 접근).
 
 ### 2. (도메인 사용 시) DNS 설정
 
@@ -71,11 +71,16 @@ journalctl -u vocab-notebook -f
 
 ## 주의 / 알려진 변수
 
-- **CoreDB CLI 옵션·바이너리 이름**: `coredb.service`는 `coredb start --host --port
-  --data-dir --commitlog-dir`를 가정한다. 실제 옵션이 다르면 `coredb --help`로 확인 후
-  유닛 파일을 수정한다. 빌드 산출물 경로도 `/opt/coredb/target/release/`에서 확인.
-- **scylla ↔ CoreDB 호환**: 앱이 9042에 연결되지 않으면 `src/db.rs`를 HTTP API
-  (`POST /query`) 방식으로 교체한다(메인 README 참고).
+- **통신 = HTTP /query**: 앱은 CoreDB의 HTTP `/query` API(9142)로 접속한다(scylla 네이티브
+  프로토콜 아님 — DML 결과 프레임 비호환으로 전환). `coredb.service`는 `coredb --data-dir
+  --commitlog-dir start --host --port`로 HTTP 서버를 띄운다. **전역 인자(`--data-dir`/
+  `--commitlog-dir`)는 서브커맨드 `start` 앞**에 와야 한다(뒤에 두면 clap 파싱 실패).
+- **아키텍처별 빌드**: CoreDB 바이너리는 반드시 VM에서 소스로 빌드한다(`setup-vm.sh`가 수행).
+  다른 OS/arch에서 받은 바이너리는 "Exec format error"로 실행되지 않는다. 산출물 경로/이름이
+  다르면 `/opt/coredb/target/release/`를 확인해 유닛 파일을 조정.
+- **CoreDB CQL 방언**: 스키마 부트스트랩은 제한된 CQL에 맞춰져 있다(키스페이스 `WITH
+  REPLICATION` 필수, 테이블 `WITH` 절·인덱스 `IF NOT EXISTS` 미지원). 최초 기동 시
+  `journalctl -u vocab-notebook`에서 부트스트랩 로그를 확인.
 - **인증**: 현재 앱에는 Google OAuth 게이트가 아직 없다. 인터넷에 노출하기 전에 스펙 5번의
   OAuth 미들웨어를 먼저 붙이거나, 그 전까지는 방화벽 source-range를 본인 IP로 제한할 것.
 - **비용**: e2-small + 디스크 60GB 합쳐 대략 월 $15 내외 + Claude API 사용량.

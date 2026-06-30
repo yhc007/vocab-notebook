@@ -1,5 +1,5 @@
 [Unit]
-Description=CoreDB (Cassandra-style NoSQL)
+Description=CoreDB (Cassandra-style NoSQL, HTTP /query API)
 After=network.target local-fs.target
 Wants=network-online.target
 
@@ -7,11 +7,13 @@ Wants=network-online.target
 Type=simple
 User=vocab
 Group=vocab
-# 데이터/커밋로그는 영구 디스크에 저장. localhost에만 바인딩(외부 비공개).
-ExecStart=/usr/local/bin/coredb start \
-  --host 127.0.0.1 --port 9042 \
+# 데이터/커밋로그는 영구 디스크에 저장. localhost:9142(HTTP)에만 바인딩(외부 비공개).
+# 주의: --data-dir/--commitlog-dir 는 전역 인자라 서브커맨드 `start` 앞에 와야 한다.
+# `start --host --port` 가 HTTP /query 서버를 띄운다(앱은 이 포트로 접속).
+ExecStart=/usr/local/bin/coredb \
   --data-dir /var/lib/vocab/coredb/data \
-  --commitlog-dir /var/lib/vocab/coredb/commitlog
+  --commitlog-dir /var/lib/vocab/coredb/commitlog \
+  start --host 127.0.0.1 --port 9142
 WorkingDirectory=/var/lib/vocab/coredb
 Restart=on-failure
 RestartSec=3

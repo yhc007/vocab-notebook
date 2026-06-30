@@ -16,15 +16,16 @@ cargo clippy       # lint
 cargo fmt          # format
 ```
 
-There are **no tests** yet (`cargo test` runs nothing). When adding tests, the README notes the scylla↔CoreDB integration is unverified, so prefer unit tests over anything needing a live DB.
+There are **no tests** yet (`cargo test` runs nothing). Prefer unit tests over anything needing a live CoreDB.
 
-### Running locally requires a live CoreDB
+### Running locally requires a live CoreDB (HTTP build)
 
-The app calls `Db::connect` at startup and exits if CoreDB isn't reachable. Start it first:
+The app calls `Db::connect` at startup and exits if CoreDB's HTTP API isn't reachable. Start it first. Build CoreDB from source **for your machine's architecture** (a prebuilt binary from another OS/arch fails with "Exec format error"). The `start` subcommand runs an HTTP `/query` server; `--data-dir`/`--commitlog-dir` are global args and must come **before** `start`:
 
 ```bash
 git clone https://github.com/yhc007/coredb && cd coredb
-cargo run -- start --host 127.0.0.1 --port 9042
+cargo run -- --data-dir ./data --commitlog-dir ./commitlog start --host 127.0.0.1 --port 9142
+# sanity: curl -s localhost:9142/stats
 ```
 
 Required env (copy `.env.example`): `ANTHROPIC_API_KEY` is mandatory (panics if unset). `COREDB_NODE`, `BIND_ADDR`, `ANTHROPIC_MODEL` have defaults. The Google OAuth vars exist in `.env.example` but are **not wired up yet**.
@@ -36,7 +37,7 @@ Required env (copy `.env.example`): `ANTHROPIC_API_KEY` is mandatory (panics if 
 Four modules under `src/`, each one responsibility:
 
 - **`main.rs`** — axum server, `AppState { db, extractor }`, and 4 routes. `create_entry` is the core flow.
-- **`db.rs`** — `Db` wraps an `Arc<Session>` (scylla driver). `connect()` calls `bootstrap()` which runs `CREATE KEYSPACE/TABLE/INDEX IF NOT EXISTS` on every startup (idempotent schema setup — there are no migration files).
+- **`db.rs`** — `Db` is a `reqwest::Client` + CoreDB HTTP `/query` URL (no scylla; the native protocol's DML result frames are incompatible with the scylla driver). All CQL goes over `POST /query` as `{"query": "..."}`; SELECT responses parse as `{"data":[{"columns":{col:{"Text":..}}}]}`. `connect()` calls `bootstrap()` on every startup (idempotent — already-exists errors are swallowed; no migration files).
 - **`extract.rs`** — `Extractor` POSTs to `https://api.anthropic.com/v1/messages` via reqwest (raw HTTP, no SDK). Returns JSON parsed into `Extraction`.
 - **`models.rs`** — `Category` enum (nyt/book/paper/other), form input, and the `Word`/`Sentence`/`Extraction` shapes Claude must return.
 
@@ -53,8 +54,8 @@ Four modules under `src/`, each one responsibility:
 
 ### Data model notes (CoreDB / CQL)
 
-- `words` and `sentences` are partitioned by `category` with `CLUSTERING ORDER BY (created_at DESC)`. `list_words(None)` therefore loops over all four category partitions and concatenates — there is no cross-partition query.
-- Timestamps are stored as `timestamp_millis()` i64.
+- `words` and `sentences` are partitioned by `category` (compound PK `(category, created_at, id)`). `list_words(None)` loops over all four category partitions and concatenates — there is no cross-partition query. No `CLUSTERING ORDER BY` (CoreDB rejects `WITH` clauses), so rows aren't server-side ordered.
+- **No bind parameters** over the HTTP API: `db.rs` inlines values into CQL. `cql_str()` quotes text and maps ASCII `'` → `'` (U+2019), because CoreDB doesn't un-double `''` and breaks on a raw `'`. uuids are bare, `None` → `NULL`, timestamps are bare `timestamp_millis()` ints.
 - `Word.id`/`Sentence.id` use `#[serde(default = "Uuid::new_v4")]` so Claude's JSON doesn't need to supply them.
 
 ### Claude extraction contract (`extract.rs`)
@@ -63,7 +64,8 @@ The prompt demands a fixed JSON schema: `{"words":[{term,definition,example}],"s
 
 ## Important constraints
 
-- **CoreDB is a limited single-node CQL implementation** ("needs more testing before production"). `CREATE INDEX` / `IF NOT EXISTS` and some syntax may need adjustment per CoreDB version — check the `cargo run` bootstrap log on first run. If the scylla driver (0.13) can't connect over Native Protocol v4, the documented fallback is to rewrite `db.rs` queries against CoreDB's HTTP API (`POST /query`).
+- **CoreDB access is over its HTTP `/query` API, not the native protocol.** The scylla native driver couldn't parse CoreDB's DML result frames, so `db.rs` was rewritten to `POST /query` (JSON). `COREDB_NODE` is an HTTP `host:port` (default `127.0.0.1:9142`), not a CQL node.
+- **CoreDB's CQL dialect is limited** — the bootstrap schema is shaped around it: keyspace needs `WITH REPLICATION`, tables reject any `WITH` clause, `CREATE INDEX` rejects `IF NOT EXISTS`. `bootstrap()` swallows already-exists errors. If you touch the schema, check the bootstrap log on first run.
 - **No auth yet.** Routes are wide open. Do not expose to the internet before adding the Google OAuth gate + email whitelist (spec item 5); until then restrict by firewall source-range. The `ALLOWED_EMAIL`/`ALLOWED_HD` env vars anticipate this.
 - The frontend is a single static `static/index.html` served via `include_str!` (compiled into the binary). `/words` HTML is built by hand-concatenating strings with an `esc()` helper.
 
