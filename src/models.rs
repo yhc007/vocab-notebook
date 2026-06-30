@@ -12,12 +12,30 @@ pub enum Category {
 }
 
 impl Category {
+    /// UI 필터/네비게이션에서 순회할 전체 카테고리.
+    pub const ALL: [Category; 4] = [
+        Category::Nyt,
+        Category::Book,
+        Category::Paper,
+        Category::Other,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Category::Nyt => "nyt",
             Category::Book => "book",
             Category::Paper => "paper",
             Category::Other => "other",
+        }
+    }
+
+    /// 화면 표시용 한국어 라벨.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Category::Nyt => "NYT",
+            Category::Book => "책",
+            Category::Paper => "논문",
+            Category::Other => "기타",
         }
     }
 

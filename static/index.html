@@ -12,11 +12,19 @@
     button { margin-top: 1rem; padding: .6rem 1.2rem; font-size: 1rem; cursor: pointer; }
     .row { display: flex; gap: 1rem; }
     .row > div { flex: 1; }
-    nav a { margin-right: 1rem; }
+    nav { display: flex; gap: 1rem; align-items: center; padding-bottom: .75rem; border-bottom: 1px solid #8884; }
+    nav a { text-decoration: none; color: inherit; opacity: .7; }
+    nav a.active { font-weight: 700; opacity: 1; }
+    nav a.right { margin-left: auto; font-size: .9rem; }
   </style>
 </head>
 <body>
-  <nav><a href="/">붙여넣기</a><a href="/words">단어장</a></nav>
+  <nav>
+    <a href="/" class="active">붙여넣기</a>
+    <a href="/words">단어장</a>
+    <a href="/sentences">베스트 문장</a>
+    <a href="/auth/logout" class="right">로그아웃</a>
+  </nav>
   <h1>📖 기사·책·논문 붙여넣기</h1>
   <form action="/entries" method="post">
     <div class="row">

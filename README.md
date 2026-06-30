@@ -55,7 +55,7 @@ cargo run
 ## 다음 단계 (스펙 문서 참조)
 
 - [x] Google OAuth 로그인 게이트 + 이메일 화이트리스트 (스펙 5번) — `src/auth.rs`
-- [ ] 베스트 문장 조회 UI / 카테고리 필터 UI 다듬기
+- [x] 베스트 문장 조회 UI(`/sentences`) / 카테고리 필터 + '안다' 버튼
 - [ ] VM 배포(systemd + 리버스 프록시) + CoreDB 백업 cron (스펙 7번)
 - [ ] 복습 모드, CSV/Anki 내보내기
 

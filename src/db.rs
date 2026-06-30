@@ -176,11 +176,12 @@ impl Db {
     }
 
     /// 카테고리별 단어 조회. cat=None이면 전체 카테고리 합쳐서 조회.
-    pub async fn list_words(&self, cat: Option<Category>) -> Result<Vec<(String, String, String)>> {
-        let cats: Vec<Category> = match cat {
-            Some(c) => vec![c],
-            None => vec![Category::Nyt, Category::Book, Category::Paper, Category::Other],
-        };
+    /// 반환: (카테고리, term, definition, example).
+    pub async fn list_words(
+        &self,
+        cat: Option<Category>,
+    ) -> Result<Vec<(Category, String, String, String)>> {
+        let cats: Vec<Category> = cat.map_or_else(|| Category::ALL.to_vec(), |c| vec![c]);
         let mut out = Vec::new();
         for c in cats {
             let cql = format!(
@@ -189,7 +190,28 @@ impl Db {
             );
             let v = self.exec(&cql).await?;
             for r in rows(&v) {
-                out.push((text(r, "term"), text(r, "definition"), text(r, "example")));
+                out.push((c, text(r, "term"), text(r, "definition"), text(r, "example")));
+            }
+        }
+        Ok(out)
+    }
+
+    /// 카테고리별 베스트 문장 조회. cat=None이면 전체.
+    /// 반환: (카테고리, text, reason).
+    pub async fn list_sentences(
+        &self,
+        cat: Option<Category>,
+    ) -> Result<Vec<(Category, String, String)>> {
+        let cats: Vec<Category> = cat.map_or_else(|| Category::ALL.to_vec(), |c| vec![c]);
+        let mut out = Vec::new();
+        for c in cats {
+            let cql = format!(
+                "SELECT text, reason FROM vocab.sentences WHERE category = {}",
+                cql_str(c.as_str())
+            );
+            let v = self.exec(&cql).await?;
+            for r in rows(&v) {
+                out.push((c, text(r, "text"), text(r, "reason")));
             }
         }
         Ok(out)
