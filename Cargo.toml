@@ -9,10 +9,8 @@ tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "trace"] }
 
-# CoreDB는 Cassandra Native Protocol v4 호환 → scylla 드라이버 사용
-scylla = "0.13"
-
-# Claude API 호출
+# CoreDB 접근 + Claude API 호출. CoreDB는 Native Protocol(scylla) 대신
+# HTTP /query JSON API를 사용한다(src/db.rs 참고).
 reqwest = { version = "0.12", features = ["json"] }
 
 serde = { version = "1", features = ["derive"] }

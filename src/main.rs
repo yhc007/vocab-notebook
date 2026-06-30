@@ -31,7 +31,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let node = std::env::var("COREDB_NODE").unwrap_or_else(|_| "127.0.0.1:9042".into());
+    // CoreDB HTTP /query 엔드포인트 (host:port 또는 전체 URL)
+    let node = std::env::var("COREDB_NODE").unwrap_or_else(|_| "127.0.0.1:9142".into());
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY required");
     let model =
