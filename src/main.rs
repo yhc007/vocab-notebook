@@ -5,7 +5,7 @@ mod models;
 
 use axum::{
     extract::{FromRef, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     middleware,
     response::{Html, IntoResponse, Redirect},
     routing::{get, post},
@@ -71,6 +71,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/words/known", post(mark_known))
         .route("/sentences", get(list_sentences))
         .route("/review", get(review))
+        .route("/export/words.csv", get(export_words_csv))
+        .route("/export/words.tsv", get(export_words_anki))
+        .route("/export/sentences.csv", get(export_sentences_csv))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
 
     let app = Router::new()
@@ -137,6 +140,11 @@ async fn list_words(
     let words = st.db.list_words(cat).await.map_err(AppError::from)?;
 
     let mut body = format!("{}<h1>단어장</h1>{}", nav("words"), category_filter("/words", cat));
+    body.push_str(&format!(
+        "<div class=\"export\">내보내기 · <a href=\"/export/words.csv{q}\">CSV</a> · \
+         <a href=\"/export/words.tsv{q}\">Anki(TSV)</a></div>",
+        q = cat_query(cat),
+    ));
     if words.is_empty() {
         body.push_str("<p class=\"empty\">아직 단어가 없습니다. <a href=\"/\">본문을 붙여넣어</a> 추출해 보세요.</p>");
     } else {
@@ -181,6 +189,10 @@ async fn list_sentences(
         nav("sentences"),
         category_filter("/sentences", cat)
     );
+    body.push_str(&format!(
+        "<div class=\"export\">내보내기 · <a href=\"/export/sentences.csv{q}\">CSV</a></div>",
+        q = cat_query(cat),
+    ));
     if sentences.is_empty() {
         body.push_str("<p class=\"empty\">아직 문장이 없습니다. <a href=\"/\">본문을 붙여넣어</a> 추출해 보세요.</p>");
     } else {
@@ -232,6 +244,78 @@ async fn review(State(st): State<AppState>) -> Result<Html<String>, AppError> {
     Ok(page("복습", &body))
 }
 
+/// 단어를 CSV로 내보낸다 (term,definition,example,category). 카테고리 필터 존중.
+async fn export_words_csv(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let cat = q.get("category").and_then(|s| Category::parse(s));
+    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
+    let mut out = String::from("term,definition,example,category\r\n");
+    for (c, term, def, ex) in &words {
+        out.push_str(&format!(
+            "{},{},{},{}\r\n",
+            csv_field(term),
+            csv_field(def),
+            csv_field(ex),
+            csv_field(c.label()),
+        ));
+    }
+    Ok(download(
+        "text/csv; charset=utf-8",
+        fname("words", cat, "csv"),
+        out,
+    ))
+}
+
+/// 단어를 Anki용 TSV로 내보낸다. `#separator`/`#columns` 디렉티브로 import를 단순화.
+async fn export_words_anki(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let cat = q.get("category").and_then(|s| Category::parse(s));
+    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
+    let mut out =
+        String::from("#separator:tab\n#html:false\n#columns:term\tdefinition\texample\tcategory\n");
+    for (c, term, def, ex) in &words {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\n",
+            tsv_field(term),
+            tsv_field(def),
+            tsv_field(ex),
+            tsv_field(c.label()),
+        ));
+    }
+    Ok(download(
+        "text/tab-separated-values; charset=utf-8",
+        fname("words-anki", cat, "tsv"),
+        out,
+    ))
+}
+
+/// 베스트 문장을 CSV로 내보낸다 (text,reason,category). 카테고리 필터 존중.
+async fn export_sentences_csv(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let cat = q.get("category").and_then(|s| Category::parse(s));
+    let sentences = st.db.list_sentences(cat).await.map_err(AppError::from)?;
+    let mut out = String::from("text,reason,category\r\n");
+    for (c, text, reason) in &sentences {
+        out.push_str(&format!(
+            "{},{},{}\r\n",
+            csv_field(text),
+            csv_field(reason),
+            csv_field(c.label()),
+        ));
+    }
+    Ok(download(
+        "text/csv; charset=utf-8",
+        fname("sentences", cat, "csv"),
+        out,
+    ))
+}
+
 async fn mark_known(
     State(st): State<AppState>,
     Form(f): Form<HashMap<String, String>>,
@@ -254,6 +338,47 @@ fn esc(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// 다운로드 응답(Content-Type + 첨부 파일명).
+fn download(content_type: &'static str, filename: String, body: String) -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+}
+
+/// 카테고리 필터가 있으면 파일명에 접미사를 붙인다(words-nyt.csv 등).
+fn fname(base: &str, cat: Option<Category>, ext: &str) -> String {
+    match cat {
+        Some(c) => format!("{base}-{}.{ext}", c.as_str()),
+        None => format!("{base}.{ext}"),
+    }
+}
+
+/// 내보내기 링크용 쿼리스트링(`?category=…` 또는 빈 문자열).
+fn cat_query(cat: Option<Category>) -> String {
+    cat.map_or_else(String::new, |c| format!("?category={}", c.as_str()))
+}
+
+/// RFC4180 CSV 필드(쉼표/따옴표/개행 포함 시 인용, 내부 따옴표는 중복).
+fn csv_field(s: &str) -> String {
+    if s.contains(['"', ',', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// TSV 필드: 탭/개행은 라인 구조를 깨므로 공백으로 치환.
+fn tsv_field(s: &str) -> String {
+    s.replace(['\t', '\n', '\r'], " ")
 }
 
 /// 공통 HTML 셸(스타일 포함)로 본문을 감싼다.
@@ -312,6 +437,8 @@ h1 { font-size: 1.4rem; margin: .5rem 0; }
 .chip { text-decoration: none; color: inherit; border: 1px solid #8886; border-radius: 999px; padding: .2rem .8rem; font-size: .9rem; }
 .chip.active { background: #2563eb; color: #fff; border-color: #2563eb; }
 .count { color: #8889; font-size: .85rem; margin: .25rem 0 .75rem; }
+.export { margin: .25rem 0 .75rem; font-size: .85rem; color: #8889; }
+.export a { color: #2563eb; }
 .empty { color: #8889; padding: 2rem 0; }
 .cards { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .75rem; }
 .card { border: 1px solid #8884; border-radius: 10px; padding: .8rem 1rem; }
