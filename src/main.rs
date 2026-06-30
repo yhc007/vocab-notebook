@@ -1,17 +1,21 @@
+mod auth;
 mod db;
 mod extract;
 mod models;
 
 use axum::{
-    extract::{Query, State},
+    extract::{FromRef, Query, State},
     http::StatusCode,
+    middleware,
     response::{Html, IntoResponse, Redirect},
     routing::{get, post},
     Form, Router,
 };
+use axum_extra::extract::cookie::Key;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use auth::OAuthConfig;
 use db::Db;
 use extract::Extractor;
 use models::{Category, EntryInput};
@@ -20,6 +24,16 @@ use models::{Category, EntryInput};
 struct AppState {
     db: Db,
     extractor: Arc<Extractor>,
+    oauth: Arc<OAuthConfig>,
+    /// 세션 쿠키 암호화 키 (PrivateCookieJar용).
+    key: Key,
+}
+
+// PrivateCookieJar가 AppState에서 쿠키 키를 꺼낼 수 있게 한다.
+impl FromRef<AppState> for Key {
+    fn from_ref(state: &AppState) -> Self {
+        state.key.clone()
+    }
 }
 
 #[tokio::main]
@@ -40,14 +54,28 @@ async fn main() -> anyhow::Result<()> {
 
     let db = Db::connect(&node).await?;
     let extractor = Arc::new(Extractor::new(api_key, model));
-    let state = AppState { db, extractor };
+    let oauth = OAuthConfig::from_env();
+    let key = auth::cookie_key();
+    let state = AppState {
+        db,
+        extractor,
+        oauth,
+        key,
+    };
 
-    // NOTE: 인증(Google OAuth)은 다음 단계에서 미들웨어로 추가 (스펙 5번 참조)
-    let app = Router::new()
+    // 앱 라우트는 require_auth 게이트 뒤에 두고, /auth/* 는 공개로 둔다.
+    let protected = Router::new()
         .route("/", get(index))
         .route("/entries", post(create_entry))
         .route("/words", get(list_words))
         .route("/words/known", post(mark_known))
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
+
+    let app = Router::new()
+        .merge(protected)
+        .route("/auth/login", get(auth::auth_login))
+        .route("/auth/callback", get(auth::auth_callback))
+        .route("/auth/logout", get(auth::auth_logout))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;

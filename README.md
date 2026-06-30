@@ -31,7 +31,12 @@ static/
    export ANTHROPIC_API_KEY=sk-ant-...        # 실제 API 키(sk-ant-api…). OAuth 토큰 아님
    export ANTHROPIC_MODEL=claude-sonnet-4-6
    export BIND_ADDR=0.0.0.0:8080
+   # 로컬에서 Google 로그인 없이 돌리려면 인증 게이트를 끈다:
+   export AUTH_DISABLED=1
    ```
+   인증을 켜려면 `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`OAUTH_REDIRECT_URL`과
+   화이트리스트(`ALLOWED_EMAIL` 또는 `ALLOWED_HD`), 세션 키(`SESSION_SECRET`)를 채운다.
+   자세한 항목은 `.env.example` 참고.
 
 ## 실행
 
@@ -49,7 +54,7 @@ cargo run
 
 ## 다음 단계 (스펙 문서 참조)
 
-- [ ] Google OAuth 로그인 게이트 + 이메일 화이트리스트 (스펙 5번)
+- [x] Google OAuth 로그인 게이트 + 이메일 화이트리스트 (스펙 5번) — `src/auth.rs`
 - [ ] 베스트 문장 조회 UI / 카테고리 필터 UI 다듬기
 - [ ] VM 배포(systemd + 리버스 프록시) + CoreDB 백업 cron (스펙 7번)
 - [ ] 복습 모드, CSV/Anki 내보내기

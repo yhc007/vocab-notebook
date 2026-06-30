@@ -28,7 +28,7 @@ cargo run -- --data-dir ./data --commitlog-dir ./commitlog start --host 127.0.0.
 # sanity: curl -s localhost:9142/stats
 ```
 
-Required env (copy `.env.example`): `ANTHROPIC_API_KEY` is mandatory (panics if unset). `COREDB_NODE`, `BIND_ADDR`, `ANTHROPIC_MODEL` have defaults. The Google OAuth vars exist in `.env.example` but are **not wired up yet**.
+Required env (copy `.env.example`): `ANTHROPIC_API_KEY` is mandatory (panics if unset). `COREDB_NODE`, `BIND_ADDR`, `ANTHROPIC_MODEL` have defaults. For local runs without Google login, set `AUTH_DISABLED=1`; otherwise set the `GOOGLE_*`/`OAUTH_REDIRECT_URL`/`ALLOWED_*`/`SESSION_SECRET` vars (see `auth.rs`).
 
 `ANTHROPIC_MODEL` defaults to `claude-sonnet-4-6`, but it's configurable — newer/more capable models exist (e.g. `claude-opus-4-8`). Set it via env without code changes; pick the model to fit cost vs. extraction quality.
 
@@ -36,7 +36,8 @@ Required env (copy `.env.example`): `ANTHROPIC_API_KEY` is mandatory (panics if 
 
 Four modules under `src/`, each one responsibility:
 
-- **`main.rs`** — axum server, `AppState { db, extractor }`, and 4 routes. `create_entry` is the core flow.
+- **`main.rs`** — axum server, `AppState { db, extractor, oauth, key }`, route wiring. The 4 app routes sit behind the `auth::require_auth` gate; `/auth/*` are public. `create_entry` is the core flow.
+- **`auth.rs`** — Google OAuth2 login gate + email whitelist. `require_auth` middleware redirects unauthenticated requests to `/auth/login`; `/auth/callback` exchanges the code, checks the whitelist, and sets an encrypted `PrivateCookieJar` session (email). `AUTH_DISABLED=1` (or missing `GOOGLE_CLIENT_ID`) bypasses the gate for local dev. No server-side session store.
 - **`db.rs`** — `Db` is a `reqwest::Client` + CoreDB HTTP `/query` URL (no scylla; the native protocol's DML result frames are incompatible with the scylla driver). All CQL goes over `POST /query` as `{"query": "..."}`; SELECT responses parse as `{"data":[{"columns":{col:{"Text":..}}}]}`. `connect()` calls `bootstrap()` on every startup (idempotent — already-exists errors are swallowed; no migration files).
 - **`extract.rs`** — `Extractor` POSTs to `https://api.anthropic.com/v1/messages` via reqwest (raw HTTP, no SDK). Returns JSON parsed into `Extraction`.
 - **`models.rs`** — `Category` enum (nyt/book/paper/other), form input, and the `Word`/`Sentence`/`Extraction` shapes Claude must return.
@@ -66,7 +67,7 @@ The prompt demands a fixed JSON schema: `{"words":[{term,definition,example}],"s
 
 - **CoreDB access is over its HTTP `/query` API, not the native protocol.** The scylla native driver couldn't parse CoreDB's DML result frames, so `db.rs` was rewritten to `POST /query` (JSON). `COREDB_NODE` is an HTTP `host:port` (default `127.0.0.1:9142`), not a CQL node.
 - **CoreDB's CQL dialect is limited** — the bootstrap schema is shaped around it: keyspace needs `WITH REPLICATION`, tables reject any `WITH` clause, `CREATE INDEX` rejects `IF NOT EXISTS`. `bootstrap()` swallows already-exists errors. If you touch the schema, check the bootstrap log on first run.
-- **No auth yet.** Routes are wide open. Do not expose to the internet before adding the Google OAuth gate + email whitelist (spec item 5); until then restrict by firewall source-range. The `ALLOWED_EMAIL`/`ALLOWED_HD` env vars anticipate this.
+- **Auth is a Google OAuth gate** (`auth.rs`), enabled when `GOOGLE_CLIENT_ID` is set and `AUTH_DISABLED` is not. Login is gated by an encrypted session cookie; access requires the email to match `ALLOWED_EMAIL` (comma-separated) or `ALLOWED_HD`. `SESSION_SECRET` seeds the cookie key (ephemeral if unset → sessions reset on restart). Note `time` is pinned to `=0.3.36` in Cargo.toml because `cookie 0.18.1` doesn't compile against newer `time`.
 - The frontend is a single static `static/index.html` served via `include_str!` (compiled into the binary). `/words` HTML is built by hand-concatenating strings with an `esc()` helper.
 
 ## Deployment
