@@ -217,6 +217,18 @@ impl Db {
         Ok(out)
     }
 
+    /// 복습 대상 단어: 아직 '안다'로 표시되지 않은(known_words에 없는) 전체 단어.
+    /// CoreDB는 비-키 컬럼 필터가 제한적이라, 전체를 받아 Rust에서 걸러낸다.
+    pub async fn review_words(&self) -> Result<Vec<(Category, String, String, String)>> {
+        let known: std::collections::HashSet<String> =
+            self.known_terms().await?.into_iter().collect();
+        let all = self.list_words(None).await?;
+        Ok(all
+            .into_iter()
+            .filter(|(_, term, _, _)| !known.contains(term))
+            .collect())
+    }
+
     /// 단어를 '안다'로 표시 → known_words에 등록.
     pub async fn mark_known(&self, term: &str) -> Result<()> {
         let now = Utc::now().timestamp_millis();

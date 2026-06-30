@@ -70,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/words", get(list_words))
         .route("/words/known", post(mark_known))
         .route("/sentences", get(list_sentences))
+        .route("/review", get(review))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
 
     let app = Router::new()
@@ -204,6 +205,33 @@ async fn list_sentences(
     Ok(page("베스트 문장", &body))
 }
 
+/// 플래시카드 복습. 복습 대상 단어를 덱(JSON)으로 내려보내고,
+/// 카드 넘김/뜻 보기/'안다' 표시는 클라이언트 JS가 처리한다('안다'는 /words/known 재사용).
+async fn review(State(st): State<AppState>) -> Result<Html<String>, AppError> {
+    let words = st.db.review_words().await.map_err(AppError::from)?;
+    let deck: Vec<serde_json::Value> = words
+        .iter()
+        .map(|(c, term, def, ex)| {
+            serde_json::json!({
+                "term": term, "definition": def, "example": ex, "category": c.label(),
+            })
+        })
+        .collect();
+    // `</script>` 깨짐 방지로 '<'를 유니코드 이스케이프.
+    let data = serde_json::to_string(&deck)
+        .unwrap_or_else(|_| "[]".into())
+        .replace('<', "\\u003c");
+
+    let body = format!(
+        "{nav}<h1>복습</h1><div id=\"rv\"></div>\
+         <script id=\"deck\" type=\"application/json\">{data}</script>\
+         <script>{js}</script>",
+        nav = nav("review"),
+        js = REVIEW_JS,
+    );
+    Ok(page("복습", &body))
+}
+
 async fn mark_known(
     State(st): State<AppState>,
     Form(f): Form<HashMap<String, String>>,
@@ -245,10 +273,11 @@ fn nav(active: &str) -> String {
         format!("<a href=\"{href}\"{cls}>{label}</a>")
     };
     format!(
-        "<nav>{}{}{}<a class=\"right\" href=\"/auth/logout\">로그아웃</a></nav>",
+        "<nav>{}{}{}{}<a class=\"right\" href=\"/auth/logout\">로그아웃</a></nav>",
         link("/", "붙여넣기", "home"),
         link("/words", "단어장", "words"),
         link("/sentences", "베스트 문장", "sentences"),
+        link("/review", "복습", "review"),
     )
 }
 
@@ -296,7 +325,68 @@ h1 { font-size: 1.4rem; margin: .5rem 0; }
 .ex { margin-top: .25rem; color: #8889; font-style: italic; }
 .sentence { margin: .4rem 0 0; padding-left: .8rem; border-left: 3px solid #2563eb; }
 .reason { margin-top: .4rem; color: #8889; font-size: .9rem; }
+.card.review { text-align: center; padding: 2rem 1rem; }
+.card.review .head { justify-content: center; }
+.card.review .term { font-size: 1.6rem; }
+.actions { margin-top: 1.2rem; display: flex; gap: .5rem; justify-content: center; align-items: center; }
+.actions button { cursor: pointer; font-size: .95rem; padding: .4rem 1rem; border: 1px solid #8886; border-radius: 8px; background: transparent; color: inherit; }
+.actions button:hover { background: #8882; }
+.actions #know { border-color: #2563eb; color: #2563eb; }
+.kbd { color: #8889; font-size: .8rem; margin-top: .75rem; }
 ";
+
+/// 복습 플래시카드 위젯. 덱은 #deck(JSON)에서 읽고, 셔플 후 한 장씩 진행한다.
+/// '알아요'는 /words/known 로 fetch POST(다음 추출/복습에서 제외).
+const REVIEW_JS: &str = r#"
+(function(){
+  var deck = JSON.parse(document.getElementById('deck').textContent);
+  for (var i=deck.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=deck[i];deck[i]=deck[j];deck[j]=t;}
+  var root = document.getElementById('rv'), idx = 0, known = 0;
+  function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML;}
+  function done(){
+    root.innerHTML = '<div class="card"><p>복습 완료! 🎉 '+deck.length+'개 중 '+known+'개를 ‘안다’로 표시했어요.</p>'+
+      '<p class="actions"><a class="chip" href="/review">다시 복습</a><a class="chip" href="/words">단어장</a></p></div>';
+  }
+  function render(){
+    if (idx >= deck.length){ done(); return; }
+    var c = deck[idx];
+    root.innerHTML =
+      '<p class="count">'+(idx+1)+' / '+deck.length+'</p>'+
+      '<div class="card review">'+
+        '<div class="head"><span class="badge">'+esc(c.category)+'</span><b class="term">'+esc(c.term)+'</b></div>'+
+        '<div id="ans" hidden><div class="def">'+esc(c.definition)+'</div><div class="ex">'+esc(c.example)+'</div></div>'+
+        '<div class="actions">'+
+          '<button id="reveal">뜻 보기</button>'+
+          '<span id="rate" hidden><button id="know">알아요</button> <button id="again">또 볼래요</button></span>'+
+        '</div>'+
+        '<div class="kbd">Space 뜻 보기 · y 알아요 · n 또 볼래요</div>'+
+      '</div>';
+    document.getElementById('reveal').onclick = reveal;
+    document.getElementById('again').onclick = next;
+    document.getElementById('know').onclick = function(){
+      try { fetch('/words/known', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({term: c.term})}); } catch(e){}
+      known++; next();
+    };
+  }
+  function reveal(){
+    var a = document.getElementById('ans'); if(!a || !a.hidden) return;
+    a.hidden = false;
+    document.getElementById('reveal').hidden = true;
+    document.getElementById('rate').hidden = false;
+  }
+  function next(){ idx++; render(); }
+  document.addEventListener('keydown', function(e){
+    if (idx >= deck.length) return;
+    var a = document.getElementById('ans'); var revealed = a && !a.hidden;
+    if (!revealed && (e.key===' '||e.key==='Enter')){ e.preventDefault(); reveal(); }
+    else if (revealed && (e.key==='y'||e.key==='1')){ var k=document.getElementById('know'); if(k) k.click(); }
+    else if (revealed && (e.key==='n'||e.key==='2')){ next(); }
+  });
+  if (!deck.length){ root.innerHTML = '<p class="empty">복습할 단어가 없습니다. <a href="/">본문을 붙여넣어</a> 추출해 보세요.</p>'; }
+  else render();
+})();
+"#;
 
 // 간단한 에러 → 500 응답
 struct AppError(String);

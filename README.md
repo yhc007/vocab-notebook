@@ -56,8 +56,9 @@ cargo run
 
 - [x] Google OAuth 로그인 게이트 + 이메일 화이트리스트 (스펙 5번) — `src/auth.rs`
 - [x] 베스트 문장 조회 UI(`/sentences`) / 카테고리 필터 + '안다' 버튼
+- [x] 복습 모드(`/review`) — 미숙지 단어 플래시카드(셔플·뜻 보기·알아요/또 볼래요)
 - [ ] VM 배포(systemd + 리버스 프록시) + CoreDB 백업 cron (스펙 7번)
-- [ ] 복습 모드, CSV/Anki 내보내기
+- [ ] CSV/Anki 내보내기
 
 ## 주의
 
