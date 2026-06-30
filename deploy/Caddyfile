@@ -1,0 +1,9 @@
+# 도메인이 있으면 아래처럼 작성 → Caddy가 Let's Encrypt로 HTTPS 자동 발급.
+vocab.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+
+# 도메인 없이 IP로만 테스트하려면 위 블록 대신 아래 사용 (HTTP, 인증서 없음):
+# :80 {
+#     reverse_proxy 127.0.0.1:8080
+# }

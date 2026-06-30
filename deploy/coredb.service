@@ -1,0 +1,21 @@
+[Unit]
+Description=CoreDB (Cassandra-style NoSQL)
+After=network.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vocab
+Group=vocab
+# 데이터/커밋로그는 영구 디스크에 저장. localhost에만 바인딩(외부 비공개).
+ExecStart=/usr/local/bin/coredb start \
+  --host 127.0.0.1 --port 9042 \
+  --data-dir /var/lib/vocab/coredb/data \
+  --commitlog-dir /var/lib/vocab/coredb/commitlog
+WorkingDirectory=/var/lib/vocab/coredb
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

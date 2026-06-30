@@ -1,0 +1,25 @@
+[package]
+name = "vocab-notebook"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+
+# CoreDB는 Cassandra Native Protocol v4 호환 → scylla 드라이버 사용
+scylla = "0.13"
+
+# Claude API 호출
+reqwest = { version = "0.12", features = ["json"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

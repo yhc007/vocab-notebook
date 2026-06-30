@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vocabulary Notebook</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin: .75rem 0 .25rem; font-weight: 600; }
+    textarea, input, select { width: 100%; padding: .5rem; box-sizing: border-box; }
+    textarea { height: 220px; }
+    button { margin-top: 1rem; padding: .6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+    .row { display: flex; gap: 1rem; }
+    .row > div { flex: 1; }
+    nav a { margin-right: 1rem; }
+  </style>
+</head>
+<body>
+  <nav><a href="/">붙여넣기</a><a href="/words">단어장</a></nav>
+  <h1>📖 기사·책·논문 붙여넣기</h1>
+  <form action="/entries" method="post">
+    <div class="row">
+      <div>
+        <label for="category">카테고리</label>
+        <select id="category" name="category">
+          <option value="nyt">NYT</option>
+          <option value="book">Book</option>
+          <option value="paper">Paper</option>
+          <option value="other">기타</option>
+        </select>
+      </div>
+      <div>
+        <label for="source_detail">출처 (제목/저자 등)</label>
+        <input id="source_detail" name="source_detail" placeholder="예: NYT 기사 제목">
+      </div>
+    </div>
+    <label for="source_url">출처 URL (선택)</label>
+    <input id="source_url" name="source_url" placeholder="https://...">
+    <label for="raw_text">본문</label>
+    <textarea id="raw_text" name="raw_text" required placeholder="여기에 본문을 붙여넣으세요"></textarea>
+    <button type="submit">단어·문장 추출</button>
+  </form>
+</body>
+</html>
