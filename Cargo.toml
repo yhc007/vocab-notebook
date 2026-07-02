@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = "0.7"
+axum = { version = "0.7", features = ["multipart"] }
 # 암호화 세션 쿠키(PrivateCookieJar)로 OAuth 로그인 상태 보관
 axum-extra = { version = "0.9", features = ["cookie-private"] }
 tokio = { version = "1", features = ["full"] }
@@ -13,7 +13,7 @@ tower-http = { version = "0.6", features = ["fs", "trace"] }
 
 # CoreDB 접근 + Claude API + Google OAuth 토큰 교환. CoreDB는
 # Native Protocol(scylla) 대신 HTTP /query JSON API를 사용한다(src/db.rs 참고).
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate"] }
 
 # SESSION_SECRET → 64바이트 쿠키 키 유도, 인증 URL 인코딩
 sha2 = "0.10"
@@ -30,3 +30,7 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+scraper = "0.27.0"
+pdf-extract = "0.12.0"
+# 한글 요약(블로그용) 마크다운 → HTML 렌더링(서버 사이드, CDN 의존 없음)
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }

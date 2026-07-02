@@ -10,8 +10,9 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"   # ~/vocab-notebook
 
 echo ">> 1. 패키지 설치"
 apt-get update
+# poppler-utils: PDF 업로드 텍스트 추출에 쓰는 pdftotext(순수 Rust 파서보다 견고, 없으면 폴백).
 apt-get install -y build-essential pkg-config libssl-dev git curl debian-keyring \
-  debian-archive-keyring apt-transport-https
+  debian-archive-keyring apt-transport-https poppler-utils
 
 echo ">> 2. 데이터 디스크 마운트 (최초 1회 포맷)"
 if ! blkid "$DATA_DEV" >/dev/null 2>&1; then

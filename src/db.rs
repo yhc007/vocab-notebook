@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use uuid::Uuid;
 
-use crate::models::{Category, Sentence, Word};
+use crate::models::{Category, EntryRow, Sentence, Word};
 
 /// CoreDB 접근 계층.
 ///
@@ -77,6 +78,19 @@ impl Db {
                 PRIMARY KEY (category, created_at, id))",
             "CREATE TABLE IF NOT EXISTS vocab.known_words (\
                 term text PRIMARY KEY, created_at timestamp)",
+            // 삭제된 기사 id. CoreDB가 복합 PK(words/sentences) 행을 실제로 지우지
+            // 못하므로, 삭제된 entry_id를 여기 기록해 조회 시 걸러낸다.
+            "CREATE TABLE IF NOT EXISTS vocab.deleted_entries (\
+                id uuid PRIMARY KEY, created_at timestamp)",
+            // 단어 어근 분석 캐시(term → 분석 JSON). 같은 단어 재조회 시 Claude 재호출 회피.
+            "CREATE TABLE IF NOT EXISTS vocab.word_roots (\
+                term text PRIMARY KEY, analysis text, created_at timestamp)",
+            // 기사 구조 마인드맵 캐시(entry_id → 마인드맵 JSON).
+            "CREATE TABLE IF NOT EXISTS vocab.entry_mindmap (\
+                entry_id uuid PRIMARY KEY, mindmap text, created_at timestamp)",
+            // 한글 요약 초안 캐시(entry_id → 요약 JSON: 블로그 + X 스레드).
+            "CREATE TABLE IF NOT EXISTS vocab.entry_summary (\
+                entry_id uuid PRIMARY KEY, summary text, created_at timestamp)",
         ];
         for s in stmts {
             if let Err(e) = self.exec(s).await {
@@ -176,20 +190,25 @@ impl Db {
     }
 
     /// 카테고리별 단어 조회. cat=None이면 전체 카테고리 합쳐서 조회.
+    /// 삭제된 기사(deleted_entries)에서 나온 단어는 제외한다.
     /// 반환: (카테고리, term, definition, example).
     pub async fn list_words(
         &self,
         cat: Option<Category>,
     ) -> Result<Vec<(Category, String, String, String)>> {
+        let deleted = self.deleted_entry_ids().await?;
         let cats: Vec<Category> = cat.map_or_else(|| Category::ALL.to_vec(), |c| vec![c]);
         let mut out = Vec::new();
         for c in cats {
             let cql = format!(
-                "SELECT term, definition, example FROM vocab.words WHERE category = {}",
+                "SELECT term, definition, example, entry_id FROM vocab.words WHERE category = {}",
                 cql_str(c.as_str())
             );
             let v = self.exec(&cql).await?;
             for r in rows(&v) {
+                if is_deleted(r, &deleted) {
+                    continue;
+                }
                 out.push((c, text(r, "term"), text(r, "definition"), text(r, "example")));
             }
         }
@@ -197,20 +216,24 @@ impl Db {
     }
 
     /// 카테고리별 베스트 문장 조회. cat=None이면 전체.
-    /// 반환: (카테고리, text, reason).
+    /// 삭제된 기사에서 나온 문장은 제외한다. 반환: (카테고리, text, reason).
     pub async fn list_sentences(
         &self,
         cat: Option<Category>,
     ) -> Result<Vec<(Category, String, String)>> {
+        let deleted = self.deleted_entry_ids().await?;
         let cats: Vec<Category> = cat.map_or_else(|| Category::ALL.to_vec(), |c| vec![c]);
         let mut out = Vec::new();
         for c in cats {
             let cql = format!(
-                "SELECT text, reason FROM vocab.sentences WHERE category = {}",
+                "SELECT text, reason, entry_id FROM vocab.sentences WHERE category = {}",
                 cql_str(c.as_str())
             );
             let v = self.exec(&cql).await?;
             for r in rows(&v) {
+                if is_deleted(r, &deleted) {
+                    continue;
+                }
                 out.push((c, text(r, "text"), text(r, "reason")));
             }
         }
@@ -239,6 +262,189 @@ impl Db {
         self.exec(&cql).await?;
         Ok(())
     }
+
+    /// 저장된 기사 전체(최신순). entries는 id 파티션이라 WHERE 없이 스캔한다.
+    pub async fn list_entries(&self) -> Result<Vec<EntryRow>> {
+        let deleted = self.deleted_entry_ids().await?;
+        let v = self
+            .exec(
+                "SELECT id, category, raw_text, source_detail, source_url, created_at \
+                 FROM vocab.entries",
+            )
+            .await?;
+        let mut out: Vec<EntryRow> = rows(&v)
+            .iter()
+            .filter_map(entry_from_row)
+            .filter(|e| !deleted.contains(&e.id))
+            .collect();
+        // CoreDB는 서버측 정렬이 없어 Rust에서 최신순 정렬.
+        out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(out)
+    }
+
+    /// 기사 한 건을 id로 조회. 소프트 삭제된 기사는 없는 것으로 취급한다.
+    pub async fn get_entry(&self, id: Uuid) -> Result<Option<EntryRow>> {
+        if self.deleted_entry_ids().await?.contains(&id) {
+            return Ok(None);
+        }
+        let cql = format!(
+            "SELECT id, category, raw_text, source_detail, source_url, created_at \
+             FROM vocab.entries WHERE id = {id}"
+        );
+        let v = self.exec(&cql).await?;
+        Ok(rows(&v).first().and_then(entry_from_row))
+    }
+
+    /// 기사 원문을 갱신 저장(이어쓰기).
+    ///
+    /// 주의: CoreDB의 INSERT는 부분 upsert가 아니라 **전체 행 REPLACE**라서
+    /// (지정하지 않은 컬럼은 NULL로 덮임) 모든 컬럼을 함께 다시 써야 한다.
+    pub async fn save_entry(&self, e: &EntryRow) -> Result<()> {
+        let cql = format!(
+            "INSERT INTO vocab.entries \
+             (id, raw_text, category, source_detail, source_url, created_at) \
+             VALUES ({id}, {raw}, {cat}, {sd}, {su}, {ts})",
+            id = e.id,
+            raw = cql_str(&e.raw_text),
+            cat = cql_str(e.category.as_str()),
+            sd = cql_opt(e.source_detail.as_deref()),
+            su = cql_opt(e.source_url.as_deref()),
+            ts = e.created_at,
+        );
+        self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 특정 기사에서 추출된 단어들 (term, definition, example).
+    /// words는 category 파티션이고 entry_id 인덱스가 없어, 전체를 받아 Rust에서 거른다.
+    pub async fn words_for_entry(&self, entry_id: Uuid) -> Result<Vec<(String, String, String)>> {
+        let mut out = Vec::new();
+        for c in Category::ALL {
+            let cql = format!(
+                "SELECT term, definition, example, entry_id FROM vocab.words WHERE category = {}",
+                cql_str(c.as_str())
+            );
+            let v = self.exec(&cql).await?;
+            for r in rows(&v) {
+                if uuid_col(r, "entry_id") == Some(entry_id) {
+                    out.push((text(r, "term"), text(r, "definition"), text(r, "example")));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// 기사 삭제(소프트 삭제).
+    ///
+    /// 이 CoreDB 빌드는 DELETE가 status=success를 반환하면서도 **행을 실제로
+    /// 지우지 않는다**(entries의 단일 PK, words/sentences의 복합 PK 모두). 따라서
+    /// 물리 삭제 대신 deleted_entries에 id를 남기고, list_entries/list_words/
+    /// list_sentences가 이 집합을 조회 시 걸러낸다.
+    pub async fn delete_entry(&self, id: Uuid) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        self.exec(&format!(
+            "INSERT INTO vocab.deleted_entries (id, created_at) VALUES ({id}, {now})"
+        ))
+        .await?;
+        Ok(())
+    }
+
+    /// 삭제 표시된 기사 id 집합.
+    pub async fn deleted_entry_ids(&self) -> Result<HashSet<Uuid>> {
+        let v = self.exec("SELECT id FROM vocab.deleted_entries").await?;
+        Ok(rows(&v).iter().filter_map(|r| uuid_col(r, "id")).collect())
+    }
+
+    /// 캐시된 어근 분석 JSON(term). 없으면 None.
+    pub async fn get_word_roots(&self, term: &str) -> Result<Option<String>> {
+        let cql = format!(
+            "SELECT analysis FROM vocab.word_roots WHERE term = {}",
+            cql_str(term)
+        );
+        let v = self.exec(&cql).await?;
+        Ok(rows(&v)
+            .first()
+            .map(|r| text(r, "analysis"))
+            .filter(|s| !s.is_empty()))
+    }
+
+    /// 어근 분석 JSON을 캐시에 저장(term 기준 upsert).
+    pub async fn save_word_roots(&self, term: &str, analysis_json: &str) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let cql = format!(
+            "INSERT INTO vocab.word_roots (term, analysis, created_at) VALUES ({}, {}, {now})",
+            cql_str(term),
+            cql_str(analysis_json),
+        );
+        self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 캐시된 기사 마인드맵 JSON. 비어있으면(무효화됨) None.
+    pub async fn get_entry_mindmap(&self, entry_id: Uuid) -> Result<Option<String>> {
+        let cql = format!(
+            "SELECT mindmap FROM vocab.entry_mindmap WHERE entry_id = {entry_id}"
+        );
+        let v = self.exec(&cql).await?;
+        Ok(rows(&v)
+            .first()
+            .map(|r| text(r, "mindmap"))
+            .filter(|s| !s.is_empty()))
+    }
+
+    /// 기사 마인드맵 JSON을 캐시에 저장(entry_id 기준 upsert). 빈 문자열이면 무효화.
+    pub async fn save_entry_mindmap(&self, entry_id: Uuid, mindmap_json: &str) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let cql = format!(
+            "INSERT INTO vocab.entry_mindmap (entry_id, mindmap, created_at) \
+             VALUES ({entry_id}, {}, {now})",
+            cql_str(mindmap_json),
+        );
+        self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 캐시된 한글 요약 초안 JSON. 비어있으면(무효화됨) None.
+    pub async fn get_entry_summary(&self, entry_id: Uuid) -> Result<Option<String>> {
+        let cql = format!(
+            "SELECT summary FROM vocab.entry_summary WHERE entry_id = {entry_id}"
+        );
+        let v = self.exec(&cql).await?;
+        Ok(rows(&v)
+            .first()
+            .map(|r| text(r, "summary"))
+            .filter(|s| !s.is_empty()))
+    }
+
+    /// 한글 요약 초안 JSON을 캐시에 저장(entry_id 기준 upsert). 빈 문자열이면 무효화.
+    pub async fn save_entry_summary(&self, entry_id: Uuid, summary_json: &str) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let cql = format!(
+            "INSERT INTO vocab.entry_summary (entry_id, summary, created_at) \
+             VALUES ({entry_id}, {}, {now})",
+            cql_str(summary_json),
+        );
+        self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 특정 기사에서 추출된 문장들 (text, reason).
+    pub async fn sentences_for_entry(&self, entry_id: Uuid) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        for c in Category::ALL {
+            let cql = format!(
+                "SELECT text, reason, entry_id FROM vocab.sentences WHERE category = {}",
+                cql_str(c.as_str())
+            );
+            let v = self.exec(&cql).await?;
+            for r in rows(&v) {
+                if uuid_col(r, "entry_id") == Some(entry_id) {
+                    out.push((text(r, "text"), text(r, "reason")));
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// 텍스트를 CQL 문자열 리터럴로 변환.
@@ -264,6 +470,7 @@ fn rows(v: &Value) -> &[Value] {
 }
 
 /// 행에서 텍스트 컬럼 값을 꺼낸다: `{"columns":{col:{"Text":"..."}}}`.
+/// (NULL 컬럼은 `{"col":"Null"}` 형태라 `Text` 키가 없어 빈 문자열로 떨어진다.)
 fn text(row: &Value, col: &str) -> String {
     row.get("columns")
         .and_then(|c| c.get(col))
@@ -271,4 +478,48 @@ fn text(row: &Value, col: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
+}
+
+/// UUID 컬럼: `{"col":{"UUID":"..."}}`.
+fn uuid_col(row: &Value, col: &str) -> Option<Uuid> {
+    row.get("columns")
+        .and_then(|c| c.get(col))
+        .and_then(|val| val.get("UUID"))
+        .and_then(Value::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
+
+/// Timestamp 컬럼: `{"col":{"Timestamp":epoch_millis}}`.
+fn ts_col(row: &Value, col: &str) -> Option<i64> {
+    row.get("columns")
+        .and_then(|c| c.get(col))
+        .and_then(|val| val.get("Timestamp"))
+        .and_then(Value::as_i64)
+}
+
+/// 행의 entry_id가 삭제된 기사 집합에 속하는지(삭제 필터용).
+fn is_deleted(row: &Value, deleted: &HashSet<Uuid>) -> bool {
+    uuid_col(row, "entry_id").is_some_and(|id| deleted.contains(&id))
+}
+
+/// 빈 문자열은 None으로(저장된 NULL/미입력 구분).
+fn opt_text(s: String) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// entries 한 행 → EntryRow. id가 없으면(파싱 실패) 건너뛴다.
+fn entry_from_row(r: &Value) -> Option<EntryRow> {
+    let id = uuid_col(r, "id")?;
+    Some(EntryRow {
+        id,
+        category: Category::parse(&text(r, "category")).unwrap_or(Category::Other),
+        raw_text: text(r, "raw_text"),
+        source_detail: opt_text(text(r, "source_detail")),
+        source_url: opt_text(text(r, "source_url")),
+        created_at: ts_col(r, "created_at").unwrap_or(0),
+    })
 }
