@@ -582,7 +582,9 @@ async fn print_words(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, AppError> {
     let cat = q.get("category").and_then(|s| Category::parse(s));
-    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
+    let mut words = st.db.list_words(cat).await.map_err(AppError::from)?;
+    // 인쇄물은 알파벳순(대소문자 무시)으로 정렬해 사전처럼 찾아보기 쉽게 한다.
+    words.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
 
     let scope = cat.map_or("전체", |c| c.label());
     let mut body = format!(
@@ -701,10 +703,17 @@ async fn review(State(st): State<AppState>) -> Result<Html<String>, AppError> {
 
 type WordRow = (Category, String, String, String);
 
-/// 단어 목록 → CSV 본문 (term,definition,example,category).
+/// 단어 목록을 알파벳순(대소문자 무시)으로 정렬한 참조 벡터. 내보내기 출력용.
+fn sorted_word_refs(words: &[WordRow]) -> Vec<&WordRow> {
+    let mut rows: Vec<&WordRow> = words.iter().collect();
+    rows.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    rows
+}
+
+/// 단어 목록 → CSV 본문 (term,definition,example,category). 알파벳순 정렬.
 fn build_words_csv(words: &[WordRow]) -> String {
     let mut out = String::from("term,definition,example,category\r\n");
-    for (c, term, def, ex) in words {
+    for (c, term, def, ex) in sorted_word_refs(words) {
         out.push_str(&format!(
             "{},{},{},{}\r\n",
             csv_field(term),
@@ -716,11 +725,11 @@ fn build_words_csv(words: &[WordRow]) -> String {
     out
 }
 
-/// 단어 목록 → Anki TSV 본문. `#separator`/`#columns` 디렉티브로 import를 단순화.
+/// 단어 목록 → Anki TSV 본문. `#separator`/`#columns` 디렉티브로 import를 단순화. 알파벳순 정렬.
 fn build_words_tsv(words: &[WordRow]) -> String {
     let mut out =
         String::from("#separator:tab\n#html:false\n#columns:term\tdefinition\texample\tcategory\n");
-    for (c, term, def, ex) in words {
+    for (c, term, def, ex) in sorted_word_refs(words) {
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\n",
             tsv_field(term),
