@@ -82,8 +82,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/words/print", get(print_words))
         .route("/sentences", get(list_sentences))
         .route("/review", get(review))
-        .route("/export/words.csv", get(export_words_csv))
-        .route("/export/words.tsv", get(export_words_anki))
+        .route("/export/words.csv", get(export_words_csv).post(export_words_csv_sel))
+        .route("/export/words.tsv", get(export_words_anki).post(export_words_anki_sel))
         .route("/export/sentences.csv", get(export_sentences_csv))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
 
@@ -592,11 +592,18 @@ async fn print_words(
            <button type=\"button\" class=\"chip\" id=\"selall\">전체 선택</button>\
            <button type=\"button\" class=\"chip\" id=\"selnone\">전체 해제</button>\
            <span id=\"prog\"></span>\
+           <button type=\"button\" class=\"chip\" id=\"expcsv\">⬇ 선택 CSV</button>\
+           <button type=\"button\" class=\"chip\" id=\"expanki\">⬇ 선택 Anki</button>\
            <button id=\"printbtn\">🖨 선택 단어 인쇄</button>\
          </div>\
-         <p class=\"noprint muted pick-hint\">인쇄할 단어를 체크하세요. 어근 분석은 인쇄할 때 선택한 단어만 불러옵니다.</p>",
+         <form id=\"expform\" method=\"post\" class=\"noprint\" hidden>\
+           <input type=\"hidden\" name=\"category\" value=\"{catkey}\">\
+           <input type=\"hidden\" name=\"terms\" id=\"expterms\">\
+         </form>\
+         <p class=\"noprint muted pick-hint\">체크한 단어만 인쇄·내보내기됩니다. 어근 분석은 인쇄할 때 선택한 단어만 불러옵니다.</p>",
         nav("words"),
         q = cat_query(cat),
+        catkey = cat.map_or("", |c| c.as_str()),
     );
 
     if words.is_empty() {
@@ -692,15 +699,12 @@ async fn review(State(st): State<AppState>) -> Result<Html<String>, AppError> {
     Ok(page("복습", &body))
 }
 
-/// 단어를 CSV로 내보낸다 (term,definition,example,category). 카테고리 필터 존중.
-async fn export_words_csv(
-    State(st): State<AppState>,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<impl IntoResponse, AppError> {
-    let cat = q.get("category").and_then(|s| Category::parse(s));
-    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
+type WordRow = (Category, String, String, String);
+
+/// 단어 목록 → CSV 본문 (term,definition,example,category).
+fn build_words_csv(words: &[WordRow]) -> String {
     let mut out = String::from("term,definition,example,category\r\n");
-    for (c, term, def, ex) in &words {
+    for (c, term, def, ex) in words {
         out.push_str(&format!(
             "{},{},{},{}\r\n",
             csv_field(term),
@@ -709,23 +713,14 @@ async fn export_words_csv(
             csv_field(c.label()),
         ));
     }
-    Ok(download(
-        "text/csv; charset=utf-8",
-        fname("words", cat, "csv"),
-        out,
-    ))
+    out
 }
 
-/// 단어를 Anki용 TSV로 내보낸다. `#separator`/`#columns` 디렉티브로 import를 단순화.
-async fn export_words_anki(
-    State(st): State<AppState>,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<impl IntoResponse, AppError> {
-    let cat = q.get("category").and_then(|s| Category::parse(s));
-    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
+/// 단어 목록 → Anki TSV 본문. `#separator`/`#columns` 디렉티브로 import를 단순화.
+fn build_words_tsv(words: &[WordRow]) -> String {
     let mut out =
         String::from("#separator:tab\n#html:false\n#columns:term\tdefinition\texample\tcategory\n");
-    for (c, term, def, ex) in &words {
+    for (c, term, def, ex) in words {
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\n",
             tsv_field(term),
@@ -734,10 +729,74 @@ async fn export_words_anki(
             tsv_field(c.label()),
         ));
     }
+    out
+}
+
+/// 선택된 term 집합(개행 구분)으로 필터. 비어 있으면 전체를 그대로 둔다.
+fn filter_words_by_terms(words: Vec<WordRow>, terms: &str) -> Vec<WordRow> {
+    let set: std::collections::HashSet<&str> =
+        terms.lines().map(str::trim).filter(|s| !s.is_empty()).collect();
+    if set.is_empty() {
+        return words;
+    }
+    words.into_iter().filter(|(_, t, _, _)| set.contains(t.trim())).collect()
+}
+
+/// 단어를 CSV로 내보낸다. 카테고리 필터 존중(GET, 전체).
+async fn export_words_csv(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let cat = q.get("category").and_then(|s| Category::parse(s));
+    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
+    Ok(download(
+        "text/csv; charset=utf-8",
+        fname("words", cat, "csv"),
+        build_words_csv(&words),
+    ))
+}
+
+/// 선택한 단어만 CSV로 내보낸다(POST, 인쇄 페이지의 선택 → terms).
+async fn export_words_csv_sel(
+    State(st): State<AppState>,
+    Form(f): Form<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let cat = f.get("category").and_then(|s| Category::parse(s));
+    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
+    let words = filter_words_by_terms(words, f.get("terms").map(String::as_str).unwrap_or(""));
+    Ok(download(
+        "text/csv; charset=utf-8",
+        fname("words", cat, "csv"),
+        build_words_csv(&words),
+    ))
+}
+
+/// 단어를 Anki용 TSV로 내보낸다. 카테고리 필터 존중(GET, 전체).
+async fn export_words_anki(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let cat = q.get("category").and_then(|s| Category::parse(s));
+    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
     Ok(download(
         "text/tab-separated-values; charset=utf-8",
         fname("words-anki", cat, "tsv"),
-        out,
+        build_words_tsv(&words),
+    ))
+}
+
+/// 선택한 단어만 Anki TSV로 내보낸다(POST).
+async fn export_words_anki_sel(
+    State(st): State<AppState>,
+    Form(f): Form<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let cat = f.get("category").and_then(|s| Category::parse(s));
+    let words = st.db.list_words(cat).await.map_err(AppError::from)?;
+    let words = filter_words_by_terms(words, f.get("terms").map(String::as_str).unwrap_or(""));
+    Ok(download(
+        "text/tab-separated-values; charset=utf-8",
+        fname("words-anki", cat, "tsv"),
+        build_words_tsv(&words),
     ))
 }
 
@@ -1652,6 +1711,25 @@ const PRINT_JS: &str = r#"
       setTimeout(function(){ window.print(); }, 60);
     });
   });
+
+  // 선택한 단어만 CSV/Anki로 내보내기: 선택 term을 폼에 담아 export 엔드포인트로 POST.
+  function selectedTerms(){
+    return selectedLis()
+      .map(function(li){ var b=li.querySelector('.roots[data-term]'); return b ? b.dataset.term : null; })
+      .filter(Boolean);
+  }
+  var expform=document.getElementById('expform'), expterms=document.getElementById('expterms');
+  function exportTo(action){
+    var terms=selectedTerms();
+    if(terms.length===0){ alert('선택된 단어가 없습니다.'); return; }
+    if(!expform||!expterms) return;
+    expterms.value=terms.join('\n');
+    expform.action=action;
+    expform.submit();
+  }
+  var ec=document.getElementById('expcsv'), ea=document.getElementById('expanki');
+  if(ec) ec.addEventListener('click', function(){ exportTo('/export/words.csv'); });
+  if(ea) ea.addEventListener('click', function(){ exportTo('/export/words.tsv'); });
 
   updateCount();
 })();
