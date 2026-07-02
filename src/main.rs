@@ -589,9 +589,12 @@ async fn print_words(
         "{}<h1>단어장 인쇄 · {scope}</h1>\
          <div class=\"toolbar noprint\">\
            <a class=\"chip\" href=\"/words{q}\">← 단어장</a>\
-           <span id=\"prog\">준비 중…</span>\
-           <button id=\"printbtn\" disabled>어근 분석 불러오는 중…</button>\
-         </div>",
+           <button type=\"button\" class=\"chip\" id=\"selall\">전체 선택</button>\
+           <button type=\"button\" class=\"chip\" id=\"selnone\">전체 해제</button>\
+           <span id=\"prog\"></span>\
+           <button id=\"printbtn\">🖨 선택 단어 인쇄</button>\
+         </div>\
+         <p class=\"noprint muted pick-hint\">인쇄할 단어를 체크하세요. 어근 분석은 인쇄할 때 선택한 단어만 불러옵니다.</p>",
         nav("words"),
         q = cat_query(cat),
     );
@@ -603,10 +606,12 @@ async fn print_words(
         for (c, term, def, ex) in &words {
             body.push_str(&format!(
                 "<li class=\"card\">\
-                   <div class=\"head\"><span class=\"badge\">{cat}</span><b class=\"term\">{term}</b></div>\
+                   <div class=\"head\">\
+                     <label class=\"pick noprint\"><input type=\"checkbox\" class=\"pickbox\" checked></label>\
+                     <span class=\"badge\">{cat}</span><b class=\"term\">{term}</b></div>\
                    <div class=\"def\">{def}</div>\
                    <div class=\"ex\">{ex}</div>\
-                   <div class=\"roots\" data-term=\"{term}\"><span class=\"muted\">어근 분석 로딩…</span></div>\
+                   <div class=\"roots\" data-term=\"{term}\"><span class=\"muted\">인쇄 시 어근 분석 포함</span></div>\
                  </li>",
                 cat = esc(c.label()),
                 term = esc(term),
@@ -1261,9 +1266,14 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
 #printbtn:disabled { opacity: .55; cursor: default; box-shadow: none; }
 .print-words { list-style: none; padding: 0; margin: .5rem 0 0; columns: 2; column-gap: 1.3rem; }
 .print-words .card { break-inside: avoid; -webkit-column-break-inside: avoid; margin: 0 0 .85rem; }
+.print-words li.unsel { opacity: .4; }
+.pick { display: inline-flex; align-items: center; margin-right: .15rem; cursor: pointer; }
+.pickbox { width: 1.05rem; height: 1.05rem; cursor: pointer; accent-color: var(--accent); }
+.pick-hint { font-size: .84rem; margin: -.3rem 0 .7rem; }
 
 @media print {
   nav, .toolbar, .noprint, .filter, .export { display: none !important; }
+  .print-words li.unsel { display: none !important; }
   html, body { background: #fff !important; color: #000 !important; }
   body::before { display: none !important; }
   .wrap { max-width: none; margin: 0; padding: 0; }
@@ -1593,27 +1603,57 @@ const PRINT_JS: &str = r#"
     if(d.mnemonic) box.appendChild(el('div','mnemonic','💡 '+d.mnemonic));
     if(!box.childNodes.length) box.appendChild(el('div','muted','(분석 없음)'));
   }
-  var boxes=Array.prototype.slice.call(document.querySelectorAll('.roots[data-term]'));
-  var total=boxes.length, done=0, i=0, active=0, CONC=3;
+  var lis=Array.prototype.slice.call(document.querySelectorAll('.print-words li'));
   var prog=document.getElementById('prog'), btn=document.getElementById('printbtn');
-  function update(){
-    if(prog) prog.textContent = done<total ? ('어근 분석 불러오는 중… '+done+' / '+total) : ('준비 완료 · 단어 '+total+'개');
-    if(done>=total && btn){ btn.disabled=false; btn.textContent='🖨 PDF로 저장 / 인쇄'; }
+  var selall=document.getElementById('selall'), selnone=document.getElementById('selnone');
+
+  function selectedLis(){ return lis.filter(function(li){ return !li.classList.contains('unsel'); }); }
+  function updateCount(){ if(prog) prog.textContent = selectedLis().length+' / '+lis.length+' 선택'; }
+
+  // 체크박스 ↔ li.unsel 동기화
+  lis.forEach(function(li){
+    var cb=li.querySelector('.pickbox'); if(!cb) return;
+    cb.addEventListener('change', function(){ li.classList.toggle('unsel', !cb.checked); updateCount(); });
+  });
+  function setAll(on){
+    lis.forEach(function(li){ var cb=li.querySelector('.pickbox'); if(cb) cb.checked=on; li.classList.toggle('unsel', !on); });
+    updateCount();
   }
-  function pump(){
-    while(active<CONC && i<total){
-      (function(box){
-        active++;
-        fetch('/words/roots?term='+encodeURIComponent(box.dataset.term))
-          .then(function(r){ if(!r.ok) throw 0; return r.json(); })
-          .then(function(d){ render(box,d); })
-          .catch(function(){ box.textContent=''; box.appendChild(el('div','muted','(분석 실패)')); })
-          .then(function(){ done++; active--; update(); pump(); });
-      })(boxes[i++]);
+  if(selall) selall.addEventListener('click', function(){ setAll(true); });
+  if(selnone) selnone.addEventListener('click', function(){ setAll(false); });
+
+  // 선택된 단어 중 아직 어근을 안 불러온 것만 로드(동시성 제한) 후 콜백.
+  function loadRoots(boxes, cb){
+    var total=boxes.length, done=0, i=0, active=0, CONC=3;
+    if(total===0){ cb(); return; }
+    function pump(){
+      while(active<CONC && i<total){
+        (function(box){
+          active++;
+          fetch('/words/roots?term='+encodeURIComponent(box.dataset.term))
+            .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+            .then(function(d){ render(box,d); box.dataset.loaded='1'; })
+            .catch(function(){ box.textContent=''; box.appendChild(el('div','muted','(분석 실패)')); })
+            .then(function(){ done++; active--; if(prog) prog.textContent='어근 분석 불러오는 중… '+done+' / '+total; if(done>=total) cb(); else pump(); });
+        })(boxes[i++]);
+      }
     }
+    pump();
   }
-  if(btn) btn.addEventListener('click', function(){ window.print(); });
-  update(); pump();
+
+  if(btn) btn.addEventListener('click', function(){
+    var sel=selectedLis();
+    if(sel.length===0){ alert('선택된 단어가 없습니다.'); return; }
+    var pending=sel.map(function(li){ return li.querySelector('.roots[data-term]'); })
+                   .filter(function(b){ return b && !b.dataset.loaded; });
+    btn.disabled=true;
+    loadRoots(pending, function(){
+      btn.disabled=false; updateCount();
+      setTimeout(function(){ window.print(); }, 60);
+    });
+  });
+
+  updateCount();
 })();
 "#;
 
