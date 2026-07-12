@@ -74,6 +74,7 @@ impl Extractor {
         // Stage 2(선택): EXTRACT_REFINE=1이면 definition을 문맥 기준으로 한 번 더 교정.
         // 정제가 실패해도 1차 결과를 살리도록 에러는 삼키고 원본을 유지한다.
         if self.refine && !ex.words.is_empty() {
+            tracing::info!("definition 정제 패스 실행: 단어 {}개", ex.words.len());
             match self.refine_definitions(&ex.words, text).await {
                 Ok(refined) => ex.words = refined,
                 Err(e) => tracing::warn!("definition 정제 실패(1차 결과 유지): {e}"),
