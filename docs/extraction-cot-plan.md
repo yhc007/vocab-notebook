@@ -72,22 +72,29 @@ let prompt = format!(
 
 ---
 
-## 단계 2 — 선택적 정제 패스 (품질 더 필요할 때, 청크당 +1 호출)
+## 단계 2 — 선택적 정제 패스 (구현됨, `EXTRACT_REFINE=1`일 때만, 청크당 +1 호출) ✅
 
-1차 추출된 단어 리스트에 대해서만 "각 단어의 문맥 의미를 검증/교정"하는 2차 호출을 추가.
-`analyze_roots()`가 이미 단어 단위 후속 호출 패턴을 쓰므로 같은 구조로 붙인다.
+1차 추출된 단어 리스트의 definition만 "문맥 정합성 검증/교정"하는 2차 호출.
 
-구현 스케치:
+구현된 내용(`src/extract.rs`, `src/models.rs`):
 
-- `Extractor`에 `refine_definitions(&self, words: &[Word], context: &str) -> Result<Vec<Word>>`
-  같은 메서드 추가. 입력: 1차 단어들 + 그 청크 본문. 출력: definition이 교정된 단어들.
-- 프롬프트: "다음 단어들의 definition이 주어진 문맥에서 정확한지 검토하고, 부정확하면
-  이 문맥에 맞게 고쳐라. term/example은 유지. JSON 배열로만 응답."
-- `extract_chunked()`의 각 청크 파이프라인에서 `extract()` 뒤에 선택적으로 호출.
-  비용을 고려해 **기본은 off**, 환경변수(예: `EXTRACT_REFINE=1`)나 설정으로 켜는 것을 권장.
+- `Extractor::refine_definitions(&self, words: &[Word], context: &str) -> Result<Vec<Word>>`
+  추가. 입력: 1차 단어들 + 그 청크 본문. 각 항목의 `term`+현재 `definition`만 프롬프트로
+  보내 교정된 뜻을 받는다. 응답 스키마는 `{"words":[{"term","definition"}]}`
+  (`models::RefinedWords`/`RefinedWord`).
+- **term/example/id는 원본을 그대로 유지**하고, 교정된 definition만 `term`(소문자) 기준으로
+  병합한다. 모델이 순서를 바꾸거나 일부를 빠뜨려도 원본이 온전히 보존됨.
+- 호출 지점은 별도 파이프라인이 아니라 **`extract()` 끝**: `EXTRACT_REFINE=1`이고 단어가
+  있을 때만 `refine_definitions`를 호출한다. `extract_chunked()`는 청크마다 `extract()`를
+  부르므로 자동으로 **청크당 +1 호출**이 된다. 단일 청크 경로도 동일하게 커버.
+- 플래그는 `Extractor::new()`에서 `EXTRACT_REFINE` 환경변수를 한 번 읽어 `refine: bool`
+  필드에 저장(기본 off). 토글은 재시작 필요. `.env.example`에 문서화.
+- **실패 격리**: 정제 호출/파싱이 실패하면 `tracing::warn!`만 남기고 1차 결과를 그대로
+  반환한다(전체 추출은 깨지지 않음).
 
-이 단계는 정확도를 더 끌어올리지만 비용이 청크당 2배가 되므로, 단계 1의 효과를 먼저
-확인한 뒤 필요할 때만 진행.
+검증(라이브): 일부러 사전 대표뜻으로 채운 definition("charged→전기를 충전했다",
+"spring→봄, 계절")을 `refine_definitions`에 넣어 문맥 뜻("비난했다", "갑자기 안기다")으로
+교정되고 term/example이 보존됨을 확인.
 
 ---
 

@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use serde_json::json;
 
-use crate::models::{Extraction, MindMap, RootAnalysis, Summary};
+use crate::models::{Extraction, MindMap, RefinedWords, RootAnalysis, Summary, Word};
 
 /// 추출 청크 하나의 최대 문자 수(Claude 호출당 크기를 제한해 응답을 안정화).
 const CHUNK_CHARS: usize = 12_000;
@@ -20,6 +20,8 @@ pub struct Extractor {
     api_key: String,
     model: String,
     http: reqwest::Client,
+    /// Stage 2 정제 패스 on/off. `EXTRACT_REFINE=1`일 때만 켜진다(기본 off).
+    refine: bool,
 }
 
 impl Extractor {
@@ -28,6 +30,8 @@ impl Extractor {
             api_key,
             model,
             http: reqwest::Client::new(),
+            // 청크당 +1 호출이 붙는 선택 기능이라 명시적으로 켤 때만 동작.
+            refine: std::env::var("EXTRACT_REFINE").as_deref() == Ok("1"),
         }
     }
 
@@ -64,8 +68,69 @@ impl Extractor {
 
         let content = self.message(&prompt, 4096).await?;
         let json_str = extract_json_block(&content);
-        serde_json::from_str(&json_str)
-            .map_err(|e| anyhow!("failed to parse extraction JSON: {e}; raw: {content}"))
+        let mut ex: Extraction = serde_json::from_str(&json_str)
+            .map_err(|e| anyhow!("failed to parse extraction JSON: {e}; raw: {content}"))?;
+
+        // Stage 2(선택): EXTRACT_REFINE=1이면 definition을 문맥 기준으로 한 번 더 교정.
+        // 정제가 실패해도 1차 결과를 살리도록 에러는 삼키고 원본을 유지한다.
+        if self.refine && !ex.words.is_empty() {
+            match self.refine_definitions(&ex.words, text).await {
+                Ok(refined) => ex.words = refined,
+                Err(e) => tracing::warn!("definition 정제 실패(1차 결과 유지): {e}"),
+            }
+        }
+        Ok(ex)
+    }
+
+    /// Stage 2 정제 패스: 1차 추출된 단어들의 definition이 주어진 문맥에서 정확한지
+    /// 검토·교정한다. term/example/id는 원본을 그대로 유지하고 **definition만** 교체한다.
+    /// 청크 본문(`context`)을 함께 넘겨 문맥 정합성을 판단하게 한다(청크당 +1 호출).
+    pub async fn refine_definitions(&self, words: &[Word], context: &str) -> Result<Vec<Word>> {
+        // term + 현재 definition만 보내 교정을 받는다(example은 우리가 원본으로 유지).
+        let list = words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| format!("{}. {} = {}", i + 1, w.term, w.definition))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!(
+            "아래는 어떤 글에서 뽑은 영어 단어/표현과 그 한국어 뜻(definition)이다.\n\
+             각 항목의 definition이 주어진 '문맥'에서 정확한지 검토하고, 부정확하거나 \
+             사전 대표뜻에 그친 것은 이 문맥에 맞는 뜻으로 고쳐라. 이미 정확하면 그대로 두라.\n\
+             - term은 절대 바꾸지 말 것(입력과 동일한 문자열로).\n\
+             - definition만 교정하고 한국어로 쓸 것.\n\
+             - 반드시 아래 JSON 스키마로만 응답:\n\
+             {{\"words\":[{{\"term\":\"\",\"definition\":\"\"}}]}}\n\n\
+             === 단어 목록 ===\n{list}\n\n\
+             === 문맥 ===\n{context}",
+        );
+
+        let content = self.message(&prompt, 2048).await?;
+        let json_str = extract_json_block(&content);
+        let refined: RefinedWords = serde_json::from_str(&json_str)
+            .map_err(|e| anyhow!("failed to parse refine JSON: {e}; raw: {content}"))?;
+
+        // term(소문자) 기준으로 교정된 definition을 원본에 병합.
+        // 모델이 순서를 바꾸거나 일부를 빠뜨려도 원본 term/example/id는 온전히 보존된다.
+        let map: HashMap<String, String> = refined
+            .words
+            .into_iter()
+            .map(|w| (w.term.trim().to_lowercase(), w.definition))
+            .collect();
+        let merged = words
+            .iter()
+            .map(|w| {
+                let mut w = w.clone();
+                if let Some(def) = map.get(&w.term.trim().to_lowercase()) {
+                    if !def.trim().is_empty() {
+                        w.definition = def.clone();
+                    }
+                }
+                w
+            })
+            .collect();
+        Ok(merged)
     }
 
     /// 긴 본문을 청크로 나눠 **병렬로** 추출한 뒤 결과를 병합(단어/문장 중복 제거)한다.

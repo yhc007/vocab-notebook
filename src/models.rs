@@ -88,6 +88,21 @@ pub struct Extraction {
     pub sentences: Vec<Sentence>,
 }
 
+/// 정제 패스(Stage 2) 응답 한 건: term은 원본 대조용, definition은 문맥 교정본.
+/// example/id는 이 패스에서 다루지 않고 원본을 그대로 유지한다.
+#[derive(Debug, Deserialize)]
+pub struct RefinedWord {
+    pub term: String,
+    pub definition: String,
+}
+
+/// 정제 패스 응답 묶음(`{"words":[...]}`).
+#[derive(Debug, Deserialize)]
+pub struct RefinedWords {
+    #[serde(default)]
+    pub words: Vec<RefinedWord>,
+}
+
 /// 어근 분해 조각(접두사/어근/접미사).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootPart {
