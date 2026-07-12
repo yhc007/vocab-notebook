@@ -117,11 +117,22 @@ let prompt = format!(
    - 구 표현(예: phrasal verb)이 `term`으로 잡히는가?
    - `reason`이 구체적인가?
 
+### 실제 검증 결과 (2026-07-13, 리눅스 aarch64, rustc 1.94)
+- **단계 1** — `cargo check`/`cargo test`(split_chunks 4개) 통과. 다의어/구 표현 섞은
+  샘플 문단으로 라이브 추출: `charge`→"비난하다", `spring`→"갑자기 안기다", `weather`→
+  "헤쳐 나가다"로 **문맥 뜻** 반영, 구 표현(`by and large`·`bring about`·`weather the storm`
+  등) 다수 포착, `reason`도 구조·표현 관점으로 구체적임을 확인.
+- **단계 2** — `refine_definitions`에 일부러 틀린 definition("charged→전기를 충전했다",
+  "spring→봄, 계절")을 넣어 문맥 뜻으로 교정되고 term/example 보존됨을 확인.
+- **단계 2 end-to-end** — `EXTRACT_REFINE=1`로 앱을 띄우고 `POST /entries`→`/words`까지
+  구동: 로그에 `definition 정제 패스 실행: 단어 N개`가 찍히고, 저장된 단어들이 모두
+  문맥 뜻으로 나옴을 CSV 내보내기로 확인. 플래그 미설정 시 정제 패스는 돌지 않음(기본 off).
+
 ### 완료 기준 (Acceptance)
-- [ ] `cargo check` / `cargo test` 통과
-- [ ] JSON 스키마·파서 변경 없음(회귀 없음)
-- [ ] 샘플 문단에서 다의어 definition이 문맥 반영, 구 표현 1개 이상 포착 확인
-- [ ] (선택) 단계 2를 켰을 때만 추가 호출이 발생하고 기본값은 off
+- [x] `cargo check` / `cargo test` 통과
+- [x] JSON 스키마·파서 변경 없음(회귀 없음)
+- [x] 샘플 문단에서 다의어 definition이 문맥 반영, 구 표현 1개 이상 포착 확인
+- [x] 단계 2를 켰을 때만(`EXTRACT_REFINE=1`) 추가 호출이 발생하고 기본값은 off
 
 ---
 
