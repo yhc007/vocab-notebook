@@ -645,11 +645,17 @@ async fn print_words(
                     cur_date = d;
                 }
             }
+            // 날짜별 모드에서는 각 단어에도 추가된 날짜를 붙인다(인쇄물에 표시).
+            let datelbl = if by_date {
+                format!("<span class=\"wdate\">🗓 {}</span>", esc(&fmt_date(*ts)))
+            } else {
+                String::new()
+            };
             body.push_str(&format!(
                 "<li class=\"card\">\
                    <div class=\"head\">\
                      <label class=\"pick noprint\"><input type=\"checkbox\" class=\"pickbox\" checked></label>\
-                     <span class=\"badge\">{cat}</span><b class=\"term\">{term}</b></div>\
+                     <span class=\"badge\">{cat}</span><b class=\"term\">{term}</b>{datelbl}</div>\
                    <div class=\"def\">{def}</div>\
                    <div class=\"ex\">{ex}</div>\
                    <div class=\"roots\" data-term=\"{term}\"><span class=\"muted\">인쇄 시 어근 분석 포함</span></div>\
@@ -1568,6 +1574,7 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .print-words .date-sep { column-span: all; -webkit-column-span: all; list-style: none;
   font-weight: 700; font-size: 1rem; margin: .7rem 0 .5rem; padding: .25rem .1rem;
   border-bottom: 2px solid var(--accent); break-after: avoid; break-inside: avoid; }
+.wdate { color: var(--muted); font-size: .76rem; font-weight: 600; margin-left: .5rem; white-space: nowrap; }
 .pick { display: inline-flex; align-items: center; margin-right: .15rem; cursor: pointer; }
 .pickbox { width: 1.05rem; height: 1.05rem; cursor: pointer; accent-color: var(--accent); }
 .pick-hint { font-size: .84rem; margin: -.3rem 0 .7rem; }
