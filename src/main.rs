@@ -2004,10 +2004,11 @@ const GRAPH_RENDER_JS: &str = r#"
     {k:['목적'],                c:'#30d158', n:'목적어'},
     {k:['보어'],                c:'#ff9f0a', n:'보어'},
     {k:['관계절'],              c:'#5e5ce6', n:'관계절'},
+    {k:['관사'],                c:'#8e8e93', n:'기능어'}, // 수식보다 앞: '수식(관사)'도 회색
     {k:['수식'],                c:'#bf5af2', n:'수식'},
     {k:['병렬','대등','등위'],     c:'#a2845e', n:'병렬'},
     {k:['종속','접속','절'],       c:'#0aa2c0', n:'종속/절'},
-    {k:['전치','관사','한정','관계대명사'], c:'#8e8e93', n:'기능어'}
+    {k:['전치','한정','관계대명사'], c:'#8e8e93', n:'기능어'}
   ];
   function roleColor(s){
     s=s||'';
@@ -2017,8 +2018,9 @@ const GRAPH_RENDER_JS: &str = r#"
     return '#8e8e93';
   }
   function legendEl(){
-    var lg=el('div','gram-legend');
+    var lg=el('div','gram-legend'), seen={};
     ROLE_COLORS.forEach(function(b){
+      if(seen[b.n]) return; seen[b.n]=1; // 같은 이름(기능어) 중복 표시 방지
       var it=el('span'); var sw=el('i'); sw.style.background=b.c;
       it.appendChild(sw); it.appendChild(document.createTextNode(b.n)); lg.appendChild(it);
     });
