@@ -664,6 +664,10 @@ async fn list_sentences(
                    <div class=\"head\"><span class=\"badge\">{cat}</span></div>\
                    <blockquote class=\"sentence\">{text}</blockquote>\
                    <div class=\"reason\">💡 {reason}</div>\
+                   <div class=\"gram-actions\">\
+                     <button class=\"gram-btn\" title=\"이 문장의 구조 그래프 + 문법 포인트\">🔍 문법 분석</button>\
+                   </div>\
+                   <div class=\"gram\" data-text=\"{text}\" hidden></div>\
                  </li>",
                 cat = esc(c.label()),
                 text = esc(text),
@@ -671,6 +675,7 @@ async fn list_sentences(
             ));
         }
         body.push_str("</ul>");
+        body.push_str(&format!("<script>{SENTENCE_GRAPH_JS}</script>"));
     }
     Ok(page("베스트 문장", &body))
 }
@@ -1358,6 +1363,30 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
 .roots .part i { color: var(--accent); font-style: normal; font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; }
 .roots .origin, .roots .related { color: var(--muted); margin-top: .3rem; }
 .roots .mnemonic { margin-top: .45rem; }
+
+/* 문장 문법 그래프(아크 다이어그램) */
+.gram-actions { margin-top: .6rem; }
+.gram-btn { cursor: pointer; font-weight: 600; font-size: .82rem; color: var(--accent);
+  background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 10px; padding: .3rem .75rem; transition: background .15s; }
+.gram-btn:hover { background: #fff; }
+.gram-btn:disabled { opacity: .6; cursor: default; }
+.gram { margin-top: .6rem; padding: .75rem .85rem; border-radius: 14px;
+  background: rgba(255,255,255,.4); border: 1px solid var(--brd); font-size: .9rem; }
+.gram-summary { font-weight: 600; margin-bottom: .5rem; }
+.gram-scroll { overflow-x: auto; padding-bottom: .2rem; }
+.gram-wrap { position: relative; display: inline-block; min-width: 100%; }
+.gram-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.gram-row { display: flex; flex-wrap: nowrap; align-items: flex-end; gap: .5rem; padding-top: 74px; }
+.gram-node { display: flex; flex-direction: column; align-items: center; gap: .15rem;
+  background: rgba(255,255,255,.75); border: 1px solid var(--brd); border-radius: 12px;
+  padding: .3rem .55rem; white-space: nowrap; }
+.gram-text { font-weight: 600; }
+.gram-role { font-size: .68rem; color: var(--accent); }
+.gram-label { font-size: 10px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+.gram-plabel { font-weight: 700; margin: .7rem 0 .35rem; }
+.gram-points { margin: 0; padding-left: 1.1rem; }
+.gram-points li { margin: .35rem 0; line-height: 1.5; }
+
 .muted { color: var(--muted); }
 
 /* 인쇄(PDF) 뷰: 2단 레이아웃 */
@@ -1843,6 +1872,96 @@ const MINDMAP_JS: &str = r#"
     draw();
     var tmr; window.addEventListener('resize', function(){ clearTimeout(tmr); tmr=setTimeout(draw,150); });
   }
+})();
+"#;
+
+/// 베스트 문장의 문법 그래프: 버튼 클릭 시 /sentences/grammar?text= 를 fetch해
+/// 토큰 칩을 가로로 놓고 그 위에 head→dependent 관계를 SVG 아크(라벨 포함)로 그린다.
+/// 아래에 구조 요약 + 문법 포인트를 붙여 '문법 강의 도입부'로 만든다. MINDMAP_JS와 같은
+/// 방식으로 칩 위치를 측정해 곡선을 얹고, 리사이즈 시 로드된 그래프를 모두 다시 그린다.
+/// 응답은 모델 생성이라 텍스트는 textContent로만 넣는다.
+const SENTENCE_GRAPH_JS: &str = r#"
+(function(){
+  var NS='http://www.w3.org/2000/svg';
+  var PAL=['#0a84ff','#bf5af2','#ff375f','#30d158','#ff9f0a','#5e5ce6','#64d2ff','#ff6482'];
+  var drawers=[];
+  function el(t,c,x){ var e=document.createElement(t); if(c)e.className=c; if(x!=null)e.textContent=x; return e; }
+  function sv(n){ return document.createElementNS(NS,n); }
+
+  function render(box, d){
+    box.textContent='';
+    var nodes=d.nodes||[], edges=d.edges||[];
+    if(d.summary) box.appendChild(el('div','gram-summary','🔎 '+d.summary));
+    if(nodes.length){
+      var scroll=el('div','gram-scroll');
+      var wrap=el('div','gram-wrap');
+      var svg=sv('svg'); svg.setAttribute('class','gram-svg'); wrap.appendChild(svg);
+      var row=el('div','gram-row'), byId={};
+      nodes.forEach(function(n){
+        var chip=el('div','gram-node');
+        chip.appendChild(el('span','gram-text', n.text||''));
+        if(n.role) chip.appendChild(el('span','gram-role', n.role));
+        row.appendChild(chip);
+        if(n.id) byId[n.id]=chip;
+      });
+      wrap.appendChild(row); scroll.appendChild(wrap); box.appendChild(scroll);
+
+      function draw(){
+        var wr=wrap.getBoundingClientRect();
+        svg.setAttribute('width',wr.width); svg.setAttribute('height',wr.height);
+        svg.setAttribute('viewBox','0 0 '+wr.width+' '+wr.height);
+        while(svg.firstChild) svg.removeChild(svg.firstChild);
+        var any=row.querySelector('.gram-node'); if(!any) return;
+        var baseY=any.getBoundingClientRect().top - wr.top; // 칩 상단 = 아크가 만나는 선
+        edges.forEach(function(e,i){
+          var a=byId[e.from], b=byId[e.to]; if(!a||!b) return;
+          var ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
+          var sx=(ra.left+ra.right)/2 - wr.left, ex=(rb.left+rb.right)/2 - wr.left;
+          var color=PAL[i%PAL.length];
+          var apexY=Math.max(6, baseY - Math.max(14, Math.min(baseY-6, 18 + Math.abs(ex-sx)*0.32)));
+          var p=sv('path');
+          p.setAttribute('d','M '+sx+' '+baseY+' C '+sx+' '+apexY+', '+ex+' '+apexY+', '+ex+' '+baseY);
+          p.setAttribute('fill','none'); p.setAttribute('stroke',color);
+          p.setAttribute('stroke-width','1.8'); p.setAttribute('opacity','.7');
+          svg.appendChild(p);
+          var ah=sv('path'); // dependent(도착) 쪽 화살표
+          ah.setAttribute('d','M '+(ex-4)+' '+(baseY-7)+' L '+ex+' '+(baseY-1)+' L '+(ex+4)+' '+(baseY-7));
+          ah.setAttribute('fill','none'); ah.setAttribute('stroke',color);
+          ah.setAttribute('stroke-width','1.8'); ah.setAttribute('opacity','.7');
+          svg.appendChild(ah);
+          if(e.label){
+            var tx=sv('text'); tx.setAttribute('x',(sx+ex)/2); tx.setAttribute('y',apexY-2);
+            tx.setAttribute('text-anchor','middle'); tx.setAttribute('class','gram-label');
+            tx.setAttribute('fill',color); tx.textContent=e.label;
+            svg.appendChild(tx);
+          }
+        });
+      }
+      drawers.push(draw);
+      requestAnimationFrame(draw);
+    }
+    if(d.points && d.points.length){
+      box.appendChild(el('div','gram-plabel','📖 문법 포인트'));
+      var ul=el('ul','gram-points');
+      d.points.forEach(function(p){ ul.appendChild(el('li',null,p)); });
+      box.appendChild(ul);
+    }
+    if(!box.childNodes.length) box.appendChild(el('div','muted','분석 결과가 비어 있어요.'));
+  }
+
+  document.querySelectorAll('.gram-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var card=btn.closest('.card'); var box=card.querySelector('.gram');
+      if(box.dataset.loaded){ box.hidden=!box.hidden; return; }
+      box.hidden=false; box.textContent='분석 중…'; btn.disabled=true;
+      fetch('/sentences/grammar?text='+encodeURIComponent(box.dataset.text))
+        .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+        .then(function(d){ render(box,d); box.dataset.loaded='1'; })
+        .catch(function(){ box.textContent='분석을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'; })
+        .then(function(){ btn.disabled=false; });
+    });
+  });
+  var tmr; window.addEventListener('resize', function(){ clearTimeout(tmr); tmr=setTimeout(function(){ drawers.forEach(function(f){ f(); }); },150); });
 })();
 "#;
 

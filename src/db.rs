@@ -384,11 +384,11 @@ impl Db {
         Ok(())
     }
 
-    /// 캐시된 문장 문법 분석 JSON(문장 텍스트). 없으면 None.
+    /// 캐시된 문장 문법 분석 JSON(문장 해시 키). 없으면 None.
     pub async fn get_sentence_grammar(&self, sentence: &str) -> Result<Option<String>> {
         let cql = format!(
             "SELECT analysis FROM vocab.sentence_grammar WHERE sentence = {}",
-            cql_str(sentence)
+            cql_str(&sentence_key(sentence))
         );
         let v = self.exec(&cql).await?;
         Ok(rows(&v)
@@ -397,13 +397,13 @@ impl Db {
             .filter(|s| !s.is_empty()))
     }
 
-    /// 문장 문법 분석 JSON을 캐시에 저장(문장 텍스트 기준 upsert).
+    /// 문장 문법 분석 JSON을 캐시에 저장(문장 해시 키 upsert).
     pub async fn save_sentence_grammar(&self, sentence: &str, analysis_json: &str) -> Result<()> {
         let now = Utc::now().timestamp_millis();
         let cql = format!(
             "INSERT INTO vocab.sentence_grammar (sentence, analysis, created_at) \
              VALUES ({}, {}, {now})",
-            cql_str(sentence),
+            cql_str(&sentence_key(sentence)),
             cql_str(analysis_json),
         );
         self.exec(&cql).await?;
@@ -484,6 +484,18 @@ impl Db {
 /// 타이포그래픽 따옴표(U+2019)로 치환해 안전하게 인용한다.
 fn cql_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', "\u{2019}"))
+}
+
+/// 긴 자유문장을 CQL 리터럴/PK로 그대로 쓰면 CoreDB의 제한적 파서가 문자열 안의
+/// AND/AS 같은 토큰을 조건으로 오해해 WHERE가 깨진다. 그래서 문장은 안정적 해시
+/// (FNV-1a 64bit → 16자리 hex)로 키를 만들어 캐시한다: 공백·따옴표·키워드가 없어 안전.
+fn sentence_key(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.trim().as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 /// Option<&str> → CQL 리터럴(None은 NULL).

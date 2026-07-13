@@ -248,6 +248,7 @@ impl Extractor {
                각 포인트는 2문장 이내로 간결하게.\n\
              - 인용이 필요하면 문자열 안에서 큰따옴표(\") 대신 「 」를 쓰고, 값 안에 \
                이스케이프되지 않은 큰따옴표를 절대 넣지 말 것.\n\
+             - 각 최상위 키(summary/nodes/edges/points)는 정확히 한 번만 출력(중복 금지).\n\
              - 반드시 아래 JSON 스키마로만 응답:\n\
              {{\"summary\":\"\",\"nodes\":[{{\"id\":\"\",\"text\":\"\",\"role\":\"\",\"pos\":\"\"}}],\
              \"edges\":[{{\"from\":\"\",\"to\":\"\",\"label\":\"\"}}],\"points\":[\"\"]}}\n\n\
@@ -256,8 +257,13 @@ impl Extractor {
 
         let content = self.message(&prompt, 4096).await?;
         let json_str = extract_json_block(&content);
-        serde_json::from_str(&json_str)
-            .map_err(|e| anyhow!("failed to parse grammar JSON: {e}; raw: {content}"))
+        // 모델이 이따금 같은 키(summary 등)를 중복 출력한다. 구조체로 직접 파싱하면
+        // serde가 중복 필드에서 에러를 내므로, Value로 먼저 파싱해(중복 키는 마지막 값으로
+        // 병합됨) 견고하게 만든 뒤 구조체로 변환한다.
+        let v: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| anyhow!("failed to parse grammar JSON: {e}; raw: {content}"))?;
+        serde_json::from_value(v)
+            .map_err(|e| anyhow!("failed to convert grammar JSON: {e}; raw: {content}"))
     }
 
     /// 기사 전체 구조를 마인드맵(중앙 제목 + 주요 섹션/서브헤딩 + 핵심 키워드)으로 요약.
