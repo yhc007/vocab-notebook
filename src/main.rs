@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/words/roots", get(word_roots))
         .route("/words/print", get(print_words))
         .route("/sentences", get(list_sentences))
+        .route("/sentences/review", get(grammar_review))
         .route("/sentences/grammar", get(sentence_grammar))
         .route("/sentences/point", get(sentence_point))
         .route("/review", get(review))
@@ -649,7 +650,8 @@ async fn list_sentences(
         category_filter("/sentences", cat)
     );
     body.push_str(&format!(
-        "<div class=\"export\">내보내기 · <a href=\"/export/sentences.csv{q}\">CSV</a></div>",
+        "<div class=\"export\">내보내기 · <a href=\"/export/sentences.csv{q}\">CSV</a> · \
+         <a href=\"/sentences/review\">🎴 문법 카드로 복습</a></div>",
         q = cat_query(cat),
     ));
     if sentences.is_empty() {
@@ -676,9 +678,35 @@ async fn list_sentences(
             ));
         }
         body.push_str("</ul>");
-        body.push_str(&format!("<script>{SENTENCE_GRAPH_JS}</script>"));
+        body.push_str(&format!(
+            "<script>{GRAPH_RENDER_JS}</script><script>{SENTENCE_GRAPH_JS}</script>"
+        ));
     }
     Ok(page("베스트 문장", &body))
+}
+
+/// 문법 카드 복습: 모든 베스트 문장을 덱(JSON)으로 내려보내고, 클라이언트가 한 장씩
+/// 넘기며 '구조 보기' 시 /sentences/grammar를 fetch해 공유 렌더러로 그래프를 그린다.
+async fn grammar_review(State(st): State<AppState>) -> Result<Html<String>, AppError> {
+    let sentences = st.db.list_sentences(None).await.map_err(AppError::from)?;
+    let deck: Vec<serde_json::Value> = sentences
+        .iter()
+        .map(|(c, text, _reason)| serde_json::json!({ "category": c.label(), "text": text }))
+        .collect();
+    // `</script>` 깨짐 방지로 '<'를 유니코드 이스케이프(REVIEW_JS와 동일).
+    let data = serde_json::to_string(&deck)
+        .unwrap_or_else(|_| "[]".into())
+        .replace('<', "\\u003c");
+
+    let body = format!(
+        "{nav}<h1>문법 카드 복습</h1><div id=\"rv\"></div>\
+         <script id=\"deck\" type=\"application/json\">{data}</script>\
+         <script>{render}</script><script>{js}</script>",
+        nav = nav("sentences"),
+        render = GRAPH_RENDER_JS,
+        js = GRAMMAR_REVIEW_JS,
+    );
+    Ok(page("문법 카드 복습", &body))
 }
 
 /// 플래시카드 복습. 복습 대상 단어를 덱(JSON)으로 내려보내고,
@@ -1926,12 +1954,12 @@ const MINDMAP_JS: &str = r#"
 })();
 "#;
 
-/// 베스트 문장의 문법 그래프: 버튼 클릭 시 /sentences/grammar?text= 를 fetch해
-/// 토큰 칩을 가로로 놓고 그 위에 head→dependent 관계를 SVG 아크(라벨 포함)로 그린다.
-/// 아래에 구조 요약 + 문법 포인트를 붙여 '문법 강의 도입부'로 만든다. MINDMAP_JS와 같은
-/// 방식으로 칩 위치를 측정해 곡선을 얹고, 리사이즈 시 로드된 그래프를 모두 다시 그린다.
+/// 문장 문법 그래프 공유 렌더러: 토큰 칩을 가로로 놓고 그 위에 head→dependent 관계를
+/// SVG 아크(라벨·화살표)로 그리고, 아래에 구조 요약 + 문법 포인트(각 포인트 '자세히'로
+/// 상세 로드)를 붙인다. `window.gramRender(box, data)`로 노출해 /sentences와 복습 페이지가
+/// 공유한다. MINDMAP_JS처럼 칩 위치를 측정해 곡선을 얹고 리사이즈 시 다시 그린다.
 /// 응답은 모델 생성이라 텍스트는 textContent로만 넣는다.
-const SENTENCE_GRAPH_JS: &str = r#"
+const GRAPH_RENDER_JS: &str = r#"
 (function(){
   var NS='http://www.w3.org/2000/svg';
   var PAL=['#0a84ff','#bf5af2','#ff375f','#30d158','#ff9f0a','#5e5ce6','#64d2ff','#ff6482'];
@@ -2032,6 +2060,15 @@ const SENTENCE_GRAPH_JS: &str = r#"
     if(!box.childNodes.length) box.appendChild(el('div','muted','(내용 없음)'));
   }
 
+  window.gramRender = render;
+  var tmr; window.addEventListener('resize', function(){ clearTimeout(tmr); tmr=setTimeout(function(){ drawers.forEach(function(f){ f(); }); },150); });
+})();
+"#;
+
+/// 문장 카드의 '🔍 문법 분석' 버튼 wiring: /sentences/grammar를 fetch해 공유 렌더러
+/// (window.gramRender)로 그래프를 그린다. 렌더 로직 자체는 GRAPH_RENDER_JS에 있음.
+const SENTENCE_GRAPH_JS: &str = r#"
+(function(){
   document.querySelectorAll('.gram-btn').forEach(function(btn){
     btn.addEventListener('click', function(){
       var card=btn.closest('.card'); var box=card.querySelector('.gram');
@@ -2039,12 +2076,64 @@ const SENTENCE_GRAPH_JS: &str = r#"
       box.hidden=false; box.textContent='분석 중…'; btn.disabled=true;
       fetch('/sentences/grammar?text='+encodeURIComponent(box.dataset.text))
         .then(function(r){ if(!r.ok) throw 0; return r.json(); })
-        .then(function(d){ render(box,d); box.dataset.loaded='1'; })
+        .then(function(d){ window.gramRender(box,d); box.dataset.loaded='1'; })
         .catch(function(){ box.textContent='분석을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'; })
         .then(function(){ btn.disabled=false; });
     });
   });
-  var tmr; window.addEventListener('resize', function(){ clearTimeout(tmr); tmr=setTimeout(function(){ drawers.forEach(function(f){ f(); }); },150); });
+})();
+"#;
+
+/// 문법 카드 복습 덱: #deck(문장 JSON)을 셔플해 한 장씩 보여준다. 앞면은 영어 문장,
+/// '구조 보기'를 누르면 /sentences/grammar로 그래프를 로드해 공유 렌더러로 그린다.
+const GRAMMAR_REVIEW_JS: &str = r#"
+(function(){
+  var deck = JSON.parse(document.getElementById('deck').textContent);
+  for (var i=deck.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=deck[i];deck[i]=deck[j];deck[j]=t;}
+  var root=document.getElementById('rv'), idx=0;
+  function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML;}
+  function done(){
+    root.innerHTML='<div class="card"><p>복습 완료! 🎉 '+deck.length+'개 문장을 봤어요.</p>'+
+      '<p class="actions"><a class="chip" href="/sentences/review">다시</a> <a class="chip" href="/sentences">문장 목록</a></p></div>';
+  }
+  function render(){
+    if(idx>=deck.length){ done(); return; }
+    var c=deck[idx];
+    root.innerHTML=
+      '<p class="count">'+(idx+1)+' / '+deck.length+'</p>'+
+      '<div class="card review">'+
+        '<div class="head"><span class="badge">'+esc(c.category)+'</span></div>'+
+        '<blockquote class="sentence">'+esc(c.text)+'</blockquote>'+
+        '<div class="actions">'+
+          '<button id="reveal">구조 보기</button>'+
+          '<span id="nav" hidden><button id="next">다음 ▶</button></span>'+
+        '</div>'+
+        '<div class="gram" hidden></div>'+
+        '<div class="kbd">Space 구조 보기 · n 다음</div>'+
+      '</div>';
+    root.querySelector('.gram').dataset.text=c.text;
+    document.getElementById('reveal').onclick=reveal;
+    document.getElementById('next').onclick=next;
+  }
+  function reveal(){
+    var box=root.querySelector('.gram'); if(!box||box.dataset.loaded) return;
+    document.getElementById('reveal').disabled=true;
+    box.hidden=false; box.textContent='분석 중…';
+    fetch('/sentences/grammar?text='+encodeURIComponent(box.dataset.text))
+      .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+      .then(function(d){ window.gramRender(box,d); box.dataset.loaded='1'; })
+      .catch(function(){ box.textContent='분석을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'; })
+      .then(function(){ document.getElementById('reveal').hidden=true; document.getElementById('nav').hidden=false; });
+  }
+  function next(){ idx++; render(); }
+  document.addEventListener('keydown', function(e){
+    if(idx>=deck.length) return;
+    var box=root.querySelector('.gram'); var revealed=box && !box.hidden;
+    if(!revealed && (e.key===' '||e.key==='Enter')){ e.preventDefault(); reveal(); }
+    else if(revealed && (e.key==='n'||e.key==='2'||e.key==='ArrowRight')){ next(); }
+  });
+  if(!deck.length){ root.innerHTML='<p class="empty">복습할 문장이 없습니다. <a href="/">본문을 붙여넣어</a> 추출해 보세요.</p>'; }
+  else render();
 })();
 "#;
 
