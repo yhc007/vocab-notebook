@@ -4,7 +4,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use serde_json::json;
 
-use crate::models::{Extraction, MindMap, RefinedWords, RootAnalysis, Summary, Word};
+use crate::models::{
+    Extraction, MindMap, RefinedWords, RootAnalysis, SentenceGrammar, Summary, Word,
+};
 
 /// 추출 청크 하나의 최대 문자 수(Claude 호출당 크기를 제한해 응답을 안정화).
 const CHUNK_CHARS: usize = 12_000;
@@ -228,6 +230,34 @@ impl Extractor {
         let json_str = extract_json_block(&content);
         serde_json::from_str(&json_str)
             .map_err(|e| anyhow!("failed to parse roots JSON: {e}; raw: {content}"))
+    }
+
+    /// 베스트 문장을 '문법 강의 도입'용 그래프로 분해한다.
+    /// 노드(토큰/구·문법역할·품사) + 엣지(head→dependent 관계) + 강의 포인트를 JSON으로 받는다.
+    /// 문장 텍스트를 되뱉으므로 값 안 큰따옴표는 「 」로 치환하도록 지시(JSON 파싱 깨짐 방지).
+    pub async fn analyze_grammar(&self, sentence: &str) -> Result<SentenceGrammar> {
+        let prompt = format!(
+            "다음 영어 문장을 '문법 강의의 도입부'로 삼을 수 있게 구조 그래프로 분해하라.\n\
+             - nodes: 문장을 의미 단위(단어/구)로 나눈 노드. 각 node는 id(\"n1\",\"n2\"..), \
+               text(원문 조각 그대로), role(한국어 문법 역할: 주어/술어/목적어/보어/수식어/접속 등), \
+               pos(품사나 구 유형: 명사구/동사/전치사구 등).\n\
+             - edges: head→dependent 문법 관계. from/to는 node id, label은 관계명(주어·목적어·\
+               수식·종속절·병렬 등 한국어).\n\
+             - summary: 이 문장의 구조를 한 줄로(주절/종속절, 핵심 구문).\n\
+             - points: 이 문장으로 가르칠 핵심 문법 포인트 2~3개(한국어, 강의 시작용). \
+               각 포인트는 2문장 이내로 간결하게.\n\
+             - 인용이 필요하면 문자열 안에서 큰따옴표(\") 대신 「 」를 쓰고, 값 안에 \
+               이스케이프되지 않은 큰따옴표를 절대 넣지 말 것.\n\
+             - 반드시 아래 JSON 스키마로만 응답:\n\
+             {{\"summary\":\"\",\"nodes\":[{{\"id\":\"\",\"text\":\"\",\"role\":\"\",\"pos\":\"\"}}],\
+             \"edges\":[{{\"from\":\"\",\"to\":\"\",\"label\":\"\"}}],\"points\":[\"\"]}}\n\n\
+             === 문장 ===\n{sentence}",
+        );
+
+        let content = self.message(&prompt, 4096).await?;
+        let json_str = extract_json_block(&content);
+        serde_json::from_str(&json_str)
+            .map_err(|e| anyhow!("failed to parse grammar JSON: {e}; raw: {content}"))
     }
 
     /// 기사 전체 구조를 마인드맵(중앙 제목 + 주요 섹션/서브헤딩 + 핵심 키워드)으로 요약.

@@ -151,3 +151,42 @@ pub struct Summary {
     #[serde(default)]
     pub thread: Vec<String>,
 }
+
+/// 문법 그래프 노드: 문장 속 토큰/구 하나. id는 엣지 참조용.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GramNode {
+    pub id: String,
+    pub text: String,
+    /// 주어/술어/목적어/보어/수식어/접속 등 한국어 문법 역할.
+    #[serde(default)]
+    pub role: String,
+    /// 품사/구 유형(명사구/동사/전치사구 등), 선택.
+    #[serde(default)]
+    pub pos: String,
+}
+
+/// 문법 그래프 엣지: head(from)→dependent(to) 문법 관계.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GramEdge {
+    pub from: String,
+    pub to: String,
+    /// 관계명(주어·목적어·수식·종속절·병렬 등 한국어).
+    #[serde(default)]
+    pub label: String,
+}
+
+/// 베스트 문장의 문법 분석 = 강의 도입부(요약·포인트) + 구조 그래프(노드·엣지).
+/// 필드가 빠져도 파싱이 깨지지 않게 모두 default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SentenceGrammar {
+    /// 문장 구조 한 줄 요약(주절/종속절, 핵심 구문).
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub nodes: Vec<GramNode>,
+    #[serde(default)]
+    pub edges: Vec<GramEdge>,
+    /// "이 문장에서 배울 문법 포인트" 2~3개(강의 시작).
+    #[serde(default)]
+    pub points: Vec<String>,
+}

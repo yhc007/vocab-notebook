@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/words/roots", get(word_roots))
         .route("/words/print", get(print_words))
         .route("/sentences", get(list_sentences))
+        .route("/sentences/grammar", get(sentence_grammar))
         .route("/review", get(review))
         .route("/export/words.csv", get(export_words_csv).post(export_words_csv_sel))
         .route("/export/words.tsv", get(export_words_anki).post(export_words_anki_sel))
@@ -888,6 +889,40 @@ async fn word_roots(
     let analysis = st.extractor.analyze_roots(&term).await.map_err(AppError::from)?;
     let body = serde_json::to_string(&analysis).map_err(|e| AppError(e.to_string()))?;
     st.db.save_word_roots(&term, &body).await.map_err(AppError::from)?;
+    Ok(json_response(body))
+}
+
+/// 문장 문법 그래프 JSON을 반환한다. 캐시에 있으면 즉시, 없으면 Claude로 생성 후 캐시.
+/// 키는 문장 텍스트(?text=) — sentences 복합 PK를 건드리지 않고 word_roots와 같은 패턴.
+async fn sentence_grammar(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let text = q
+        .get("text")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError("text가 필요합니다".into()))?;
+
+    if let Some(cached) = st
+        .db
+        .get_sentence_grammar(&text)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Ok(json_response(cached));
+    }
+
+    let analysis = st
+        .extractor
+        .analyze_grammar(&text)
+        .await
+        .map_err(AppError::from)?;
+    let body = serde_json::to_string(&analysis).map_err(|e| AppError(e.to_string()))?;
+    st.db
+        .save_sentence_grammar(&text, &body)
+        .await
+        .map_err(AppError::from)?;
     Ok(json_response(body))
 }
 

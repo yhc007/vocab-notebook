@@ -91,6 +91,10 @@ impl Db {
             // 한글 요약 초안 캐시(entry_id → 요약 JSON: 블로그 + X 스레드).
             "CREATE TABLE IF NOT EXISTS vocab.entry_summary (\
                 entry_id uuid PRIMARY KEY, summary text, created_at timestamp)",
+            // 문장 문법 그래프 캐시(문장 텍스트 → 분석 JSON: 노드/엣지/포인트).
+            // word_roots처럼 단일 PK(=문장 텍스트)라 재조회 시 Claude 재호출 회피 + upsert 안전.
+            "CREATE TABLE IF NOT EXISTS vocab.sentence_grammar (\
+                sentence text PRIMARY KEY, analysis text, created_at timestamp)",
         ];
         for s in stmts {
             if let Err(e) = self.exec(s).await {
@@ -374,6 +378,32 @@ impl Db {
         let cql = format!(
             "INSERT INTO vocab.word_roots (term, analysis, created_at) VALUES ({}, {}, {now})",
             cql_str(term),
+            cql_str(analysis_json),
+        );
+        self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 캐시된 문장 문법 분석 JSON(문장 텍스트). 없으면 None.
+    pub async fn get_sentence_grammar(&self, sentence: &str) -> Result<Option<String>> {
+        let cql = format!(
+            "SELECT analysis FROM vocab.sentence_grammar WHERE sentence = {}",
+            cql_str(sentence)
+        );
+        let v = self.exec(&cql).await?;
+        Ok(rows(&v)
+            .first()
+            .map(|r| text(r, "analysis"))
+            .filter(|s| !s.is_empty()))
+    }
+
+    /// 문장 문법 분석 JSON을 캐시에 저장(문장 텍스트 기준 upsert).
+    pub async fn save_sentence_grammar(&self, sentence: &str, analysis_json: &str) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let cql = format!(
+            "INSERT INTO vocab.sentence_grammar (sentence, analysis, created_at) \
+             VALUES ({}, {}, {now})",
+            cql_str(sentence),
             cql_str(analysis_json),
         );
         self.exec(&cql).await?;
