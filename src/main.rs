@@ -1491,11 +1491,17 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .gt-role { font-size: .66rem; color: var(--muted); }
 /* 쉬운 뷰(색칠 문장) */
 .easy { display: flex; flex-direction: column; gap: .4rem; }
+.easy-item { display: flex; flex-direction: column; gap: .35rem; }
 .easy-part { display: flex; align-items: center; gap: .6rem; padding: .45rem .6rem;
   background: rgba(255,255,255,.55); border: 1px solid var(--brd); border-left: 5px solid var(--muted); border-radius: 12px; }
 .easy-tag { flex: 0 0 auto; font-size: .74rem; font-weight: 700; color: #fff; border-radius: 8px; padding: .2rem .55rem; white-space: nowrap; }
+.easy-body { flex: 1; }
 .easy-en { font-weight: 600; }
 .easy-ko { color: var(--muted); font-size: .92rem; margin-top: .1rem; }
+.easy-more { cursor: pointer; flex: 0 0 auto; align-self: center; font-size: .7rem; font-weight: 600;
+  color: var(--accent); background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 8px; padding: .15rem .5rem; white-space: nowrap; }
+.easy-more:hover { background: #fff; }
+.easy-kids { display: flex; flex-direction: column; gap: .35rem; margin-left: 1rem; padding-left: .6rem; border-left: 2px dashed var(--gtline); }
 .gram-plabel { font-weight: 700; margin: .7rem 0 .35rem; }
 .gram-points { margin: 0; padding-left: 1.1rem; }
 .gram-points li { margin: .35rem 0; line-height: 1.5; }
@@ -2155,6 +2161,7 @@ const GRAPH_RENDER_JS: &str = r#"
 
   // 쉬운 뷰(초등학생용): 다이어그램 없이, 문장의 큰 덩어리(주절 본동사 + 그 직속 성분)를
   // 원문 순서대로 색칠 카드로 보여준다 — 쉬운 말 라벨 + 영어 + 우리말 뜻.
+  // 종속절·관계절처럼 자식이 있는 덩어리는 '＋ 자세히'로 그 속을 펼쳐 볼 수 있다.
   function renderEasy(host, nodes, edges){
     var byId={}; nodes.forEach(function(n,i){ n.__i=i; byId[n.id]=n; });
     var children={}, hasParent={};
@@ -2162,27 +2169,56 @@ const GRAPH_RENDER_JS: &str = r#"
       if(!byId[e.from]||!byId[e.to]) return;
       (children[e.from]=children[e.from]||[]).push(e.to); hasParent[e.to]=true;
     });
+    Object.keys(children).forEach(function(k){
+      children[k].sort(function(a,b){ return byId[a].__i - byId[b].__i; });
+    });
     var roots=nodes.filter(function(n){ return !hasParent[n.id]; });
     if(!roots.length && nodes.length) roots=[nodes[0]];
-    // 최상위 덩어리 = 루트(본동사) + 루트의 직속 자식. 원문 순서로 정렬.
-    var ids=[], seen={};
-    roots.forEach(function(r){
-      [r.id].concat(children[r.id]||[]).forEach(function(id){ if(!seen[id]){ seen[id]=1; ids.push(id); } });
-    });
-    ids.sort(function(a,b){ return byId[a].__i - byId[b].__i; });
+    var rootIds={}; roots.forEach(function(r){ rootIds[r.id]=1; });
+    var built={};
 
-    var wrap=el('div','easy');
-    ids.forEach(function(id){
-      var n=byId[id], info=roleInfo(n.role);
-      var card=el('div','easy-part'); card.style.borderLeftColor=info.c;
+    // 노드 하나를 카드로. 자식이 있고 루트가 아니면 '＋ 자세히'로 하위를 지연 렌더.
+    function card(nid){
+      if(built[nid]) return null; built[nid]=1; // 사이클/중복 방어
+      var n=byId[nid]; if(!n) return null;
+      var info=roleInfo(n.role);
+      var item=el('div','easy-item');
+      var c=el('div','easy-part'); c.style.borderLeftColor=info.c;
       var tag=el('span','easy-tag', info.kid); tag.style.background=info.c;
       var body=el('div','easy-body');
       body.appendChild(el('div','easy-en', n.text||''));
       if(n.ko) body.appendChild(el('div','easy-ko', n.ko));
-      card.appendChild(tag); card.appendChild(body);
-      wrap.appendChild(card);
+      c.appendChild(tag); c.appendChild(body);
+      var kids=children[nid];
+      if(kids && kids.length && !rootIds[nid]){ // 루트 자식은 이미 최상위에 있어 제외
+        var kidbox=el('div','easy-kids'); kidbox.hidden=true;
+        var tg=el('button','easy-more','＋ 자세히');
+        tg.onclick=function(){
+          if(!kidbox.dataset.built){
+            kids.forEach(function(cid){ var cc=card(cid); if(cc) kidbox.appendChild(cc); });
+            kidbox.dataset.built='1';
+          }
+          kidbox.hidden=!kidbox.hidden;
+          tg.textContent=kidbox.hidden?'＋ 자세히':'－ 접기';
+        };
+        c.appendChild(tg);
+        item.appendChild(c); item.appendChild(kidbox);
+      } else {
+        item.appendChild(c);
+      }
+      return item;
+    }
+
+    // 최상위 = 루트(본동사) + 루트의 직속 자식. 원문 순서로.
+    var topIds=[], seen={};
+    roots.forEach(function(r){
+      [r.id].concat(children[r.id]||[]).forEach(function(id){ if(!seen[id]){ seen[id]=1; topIds.push(id); } });
     });
-    if(!ids.length) wrap.appendChild(el('div','muted','보여줄 내용이 없어요.'));
+    topIds.sort(function(a,b){ return byId[a].__i - byId[b].__i; });
+
+    var wrap=el('div','easy');
+    topIds.forEach(function(id){ var cc=card(id); if(cc) wrap.appendChild(cc); });
+    if(!topIds.length) wrap.appendChild(el('div','muted','보여줄 내용이 없어요.'));
     host.appendChild(wrap);
   }
 
