@@ -91,10 +91,13 @@ impl Db {
             // 한글 요약 초안 캐시(entry_id → 요약 JSON: 블로그 + X 스레드).
             "CREATE TABLE IF NOT EXISTS vocab.entry_summary (\
                 entry_id uuid PRIMARY KEY, summary text, created_at timestamp)",
-            // 문장 문법 그래프 캐시(문장 텍스트 → 분석 JSON: 노드/엣지/포인트).
-            // word_roots처럼 단일 PK(=문장 텍스트)라 재조회 시 Claude 재호출 회피 + upsert 안전.
+            // 문장 문법 그래프 캐시(문장 해시 → 분석 JSON: 노드/엣지/포인트).
+            // word_roots처럼 단일 PK라 재조회 시 Claude 재호출 회피 + upsert 안전.
             "CREATE TABLE IF NOT EXISTS vocab.sentence_grammar (\
                 sentence text PRIMARY KEY, analysis text, created_at timestamp)",
+            // 문법 포인트 상세(강의 본문) 캐시(문장+포인트 결합 해시 → 상세 JSON: 설명+예문).
+            "CREATE TABLE IF NOT EXISTS vocab.point_detail (\
+                pkey text PRIMARY KEY, detail text, created_at timestamp)",
         ];
         for s in stmts {
             if let Err(e) = self.exec(s).await {
@@ -405,6 +408,36 @@ impl Db {
              VALUES ({}, {}, {now})",
             cql_str(&sentence_key(sentence)),
             cql_str(analysis_json),
+        );
+        self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 캐시된 문법 포인트 상세 JSON(문장+포인트 결합 해시). 없으면 None.
+    pub async fn get_point_detail(&self, sentence: &str, point: &str) -> Result<Option<String>> {
+        let cql = format!(
+            "SELECT detail FROM vocab.point_detail WHERE pkey = {}",
+            cql_str(&sentence_key(&format!("{sentence}\u{0}{point}")))
+        );
+        let v = self.exec(&cql).await?;
+        Ok(rows(&v)
+            .first()
+            .map(|r| text(r, "detail"))
+            .filter(|s| !s.is_empty()))
+    }
+
+    /// 문법 포인트 상세 JSON을 캐시에 저장(문장+포인트 결합 해시 키 upsert).
+    pub async fn save_point_detail(
+        &self,
+        sentence: &str,
+        point: &str,
+        detail_json: &str,
+    ) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let cql = format!(
+            "INSERT INTO vocab.point_detail (pkey, detail, created_at) VALUES ({}, {}, {now})",
+            cql_str(&sentence_key(&format!("{sentence}\u{0}{point}"))),
+            cql_str(detail_json),
         );
         self.exec(&cql).await?;
         Ok(())

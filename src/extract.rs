@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use serde_json::json;
 
 use crate::models::{
-    Extraction, MindMap, RefinedWords, RootAnalysis, SentenceGrammar, Summary, Word,
+    Extraction, MindMap, PointDetail, RefinedWords, RootAnalysis, SentenceGrammar, Summary, Word,
 };
 
 /// 추출 청크 하나의 최대 문자 수(Claude 호출당 크기를 제한해 응답을 안정화).
@@ -264,6 +264,32 @@ impl Extractor {
             .map_err(|e| anyhow!("failed to parse grammar JSON: {e}; raw: {content}"))?;
         serde_json::from_value(v)
             .map_err(|e| anyhow!("failed to convert grammar JSON: {e}; raw: {content}"))
+    }
+
+    /// 문법 포인트 하나를 '강의 본문'으로 확장한다: 강의체 상세 설명 + 같은 구조의
+    /// 새 연습 예문(영어+한국어). 원문 문장을 문맥으로 함께 넘긴다.
+    /// 문장 텍스트를 되뱉으므로 인용은 「 」로, 키 중복은 금지하도록 지시한다.
+    pub async fn analyze_point(&self, sentence: &str, point: &str) -> Result<PointDetail> {
+        let prompt = format!(
+            "아래 '문법 포인트'를 영어 학습자에게 강의하듯 한국어로 자세히 설명하고, \
+             같은 문법 구조를 쓴 새 연습 예문을 만들어라.\n\
+             - explanation: 이 포인트의 규칙·쓰임·주의점을 3~5문장으로. 원문 문장을 근거로 들되 \
+               일반화해 설명.\n\
+             - examples: 같은 문법 구조를 쓴 새 예문 2~3개. 각 example은 en(원문과 다른 소재의 \
+               영어 새 예문), ko(그 한국어 해석).\n\
+             - 인용은 큰따옴표(\") 대신 「 」를 쓰고 값 안에 이스케이프되지 않은 큰따옴표 금지. \
+               각 최상위 키(explanation/examples)는 한 번만 출력.\n\
+             - 반드시 아래 JSON 스키마로만 응답:\n\
+             {{\"explanation\":\"\",\"examples\":[{{\"en\":\"\",\"ko\":\"\"}}]}}\n\n\
+             === 원문 문장 ===\n{sentence}\n\n=== 문법 포인트 ===\n{point}",
+        );
+
+        let content = self.message(&prompt, 2048).await?;
+        let json_str = extract_json_block(&content);
+        let v: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| anyhow!("failed to parse point JSON: {e}; raw: {content}"))?;
+        serde_json::from_value(v)
+            .map_err(|e| anyhow!("failed to convert point JSON: {e}; raw: {content}"))
     }
 
     /// 기사 전체 구조를 마인드맵(중앙 제목 + 주요 섹션/서브헤딩 + 핵심 키워드)으로 요약.

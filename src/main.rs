@@ -82,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/words/print", get(print_words))
         .route("/sentences", get(list_sentences))
         .route("/sentences/grammar", get(sentence_grammar))
+        .route("/sentences/point", get(sentence_point))
         .route("/review", get(review))
         .route("/export/words.csv", get(export_words_csv).post(export_words_csv_sel))
         .route("/export/words.tsv", get(export_words_anki).post(export_words_anki_sel))
@@ -931,6 +932,45 @@ async fn sentence_grammar(
     Ok(json_response(body))
 }
 
+/// 문법 포인트 상세(강의 본문) JSON을 반환한다. 캐시에 있으면 즉시, 없으면 Claude로 생성 후 캐시.
+/// 키는 문장 텍스트(?text=) + 포인트(?point=). 사용자가 '자세히'를 누를 때만 호출된다.
+async fn sentence_point(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let text = q
+        .get("text")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError("text가 필요합니다".into()))?;
+    let point = q
+        .get("point")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError("point가 필요합니다".into()))?;
+
+    if let Some(cached) = st
+        .db
+        .get_point_detail(&text, &point)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Ok(json_response(cached));
+    }
+
+    let detail = st
+        .extractor
+        .analyze_point(&text, &point)
+        .await
+        .map_err(AppError::from)?;
+    let body = serde_json::to_string(&detail).map_err(|e| AppError(e.to_string()))?;
+    st.db
+        .save_point_detail(&text, &point, &body)
+        .await
+        .map_err(AppError::from)?;
+    Ok(json_response(body))
+}
+
 /// 기사 구조 마인드맵 JSON을 반환한다. 캐시에 있으면 즉시, 없으면 Claude로 생성 후 캐시.
 async fn entry_mindmap(
     State(st): State<AppState>,
@@ -1386,6 +1426,17 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
 .gram-plabel { font-weight: 700; margin: .7rem 0 .35rem; }
 .gram-points { margin: 0; padding-left: 1.1rem; }
 .gram-points li { margin: .35rem 0; line-height: 1.5; }
+.pt-btn { cursor: pointer; font-size: .72rem; font-weight: 600; color: var(--accent);
+  background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 8px;
+  padding: .05rem .5rem; margin-left: .4rem; vertical-align: middle; transition: background .15s; }
+.pt-btn:hover { background: #fff; }
+.pt-btn:disabled { opacity: .6; cursor: default; }
+.pt-detail { margin: .4rem 0 .2rem; padding: .55rem .7rem; border-radius: 10px;
+  background: rgba(255,255,255,.55); border: 1px solid var(--brd); }
+.pt-expl { margin-bottom: .4rem; }
+.pt-ex-item { margin: .3rem 0; }
+.pt-en { font-weight: 600; }
+.pt-ko { color: var(--muted); font-size: .85rem; }
 
 .muted { color: var(--muted); }
 
@@ -1943,10 +1994,42 @@ const SENTENCE_GRAPH_JS: &str = r#"
     if(d.points && d.points.length){
       box.appendChild(el('div','gram-plabel','📖 문법 포인트'));
       var ul=el('ul','gram-points');
-      d.points.forEach(function(p){ ul.appendChild(el('li',null,p)); });
+      d.points.forEach(function(p){
+        var li=el('li');
+        li.appendChild(el('span','pt-text', p));
+        var btn=el('button','pt-btn','자세히');
+        var det=el('div','pt-detail'); det.hidden=true;
+        btn.addEventListener('click', function(){
+          if(det.dataset.loaded){ det.hidden=!det.hidden; return; }
+          det.hidden=false; det.textContent='불러오는 중…'; btn.disabled=true;
+          fetch('/sentences/point?text='+encodeURIComponent(box.dataset.text)+'&point='+encodeURIComponent(p))
+            .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+            .then(function(pd){ renderDetail(det, pd); det.dataset.loaded='1'; })
+            .catch(function(){ det.textContent='설명을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'; })
+            .then(function(){ btn.disabled=false; });
+        });
+        li.appendChild(btn); li.appendChild(det);
+        ul.appendChild(li);
+      });
       box.appendChild(ul);
     }
     if(!box.childNodes.length) box.appendChild(el('div','muted','분석 결과가 비어 있어요.'));
+  }
+
+  function renderDetail(box, pd){
+    box.textContent='';
+    if(pd.explanation) box.appendChild(el('div','pt-expl', pd.explanation));
+    if(pd.examples && pd.examples.length){
+      var wrap=el('div','pt-ex');
+      pd.examples.forEach(function(e){
+        var item=el('div','pt-ex-item');
+        item.appendChild(el('div','pt-en', e.en||''));
+        if(e.ko) item.appendChild(el('div','pt-ko', e.ko||''));
+        wrap.appendChild(item);
+      });
+      box.appendChild(wrap);
+    }
+    if(!box.childNodes.length) box.appendChild(el('div','muted','(내용 없음)'));
   }
 
   document.querySelectorAll('.gram-btn').forEach(function(btn){

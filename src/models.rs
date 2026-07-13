@@ -190,3 +190,21 @@ pub struct SentenceGrammar {
     #[serde(default)]
     pub points: Vec<String>,
 }
+
+/// 문법 포인트의 연습 예문(같은 구조의 새 문장 + 한국어 해석).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GramExample {
+    #[serde(default)]
+    pub en: String,
+    #[serde(default)]
+    pub ko: String,
+}
+
+/// 문법 포인트 상세(강의 본문): 강의체 설명 + 같은 구조의 연습 예문들.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PointDetail {
+    #[serde(default)]
+    pub explanation: String,
+    #[serde(default)]
+    pub examples: Vec<GramExample>,
+}
