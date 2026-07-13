@@ -1451,6 +1451,19 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
 .gram-text { font-weight: 600; }
 .gram-role { font-size: .68rem; color: var(--accent); }
 .gram-label { font-size: 10px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+.gram-toggle { display: inline-flex; gap: .15rem; margin-bottom: .5rem; padding: .12rem;
+  background: rgba(255,255,255,.4); border: 1px solid var(--brd); border-radius: 10px; }
+.gv-btn { cursor: pointer; font-size: .74rem; font-weight: 600; color: var(--muted);
+  background: transparent; border: 0; border-radius: 8px; padding: .12rem .65rem; transition: background .15s; }
+.gv-btn.on { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
+ul.gt-root, ul.gt-kids { list-style: none; margin: 0; padding: 0; }
+ul.gt-kids { margin: .1rem 0 .1rem .5rem; padding-left: .9rem; border-left: 2px solid var(--brd); }
+.gt-node { margin: .25rem 0; }
+.gt-head { display: inline-flex; align-items: baseline; gap: .4rem;
+  background: rgba(255,255,255,.72); border: 1px solid var(--brd); border-radius: 10px; padding: .2rem .55rem; }
+.gt-rel { font-size: .64rem; font-weight: 700; color: #fff; background: var(--accent); border-radius: 6px; padding: .05rem .4rem; }
+.gt-text { font-weight: 600; }
+.gt-role { font-size: .66rem; color: var(--muted); }
 .gram-plabel { font-weight: 700; margin: .7rem 0 .35rem; }
 .gram-points { margin: 0; padding-left: 1.1rem; }
 .gram-points li { margin: .35rem 0; line-height: 1.5; }
@@ -1967,58 +1980,116 @@ const GRAPH_RENDER_JS: &str = r#"
   function el(t,c,x){ var e=document.createElement(t); if(c)e.className=c; if(x!=null)e.textContent=x; return e; }
   function sv(n){ return document.createElementNS(NS,n); }
 
+  // 짧은 문장은 아크(어순+관계), 노드가 이보다 많으면 기본을 트리(위계)로.
+  var TREE_MIN=12;
+
+  // 아크 다이어그램: 토큰 칩을 가로로 놓고 그 위에 head→dependent 관계를 SVG 곡선으로.
+  function renderArc(host, nodes, edges){
+    var scroll=el('div','gram-scroll');
+    var wrap=el('div','gram-wrap');
+    var svg=sv('svg'); svg.setAttribute('class','gram-svg'); wrap.appendChild(svg);
+    var row=el('div','gram-row'), byId={};
+    nodes.forEach(function(n){
+      var chip=el('div','gram-node');
+      chip.appendChild(el('span','gram-text', n.text||''));
+      if(n.role) chip.appendChild(el('span','gram-role', n.role));
+      row.appendChild(chip);
+      if(n.id) byId[n.id]=chip;
+    });
+    wrap.appendChild(row); scroll.appendChild(wrap); host.appendChild(scroll);
+
+    function draw(){
+      var wr=wrap.getBoundingClientRect();
+      svg.setAttribute('width',wr.width); svg.setAttribute('height',wr.height);
+      svg.setAttribute('viewBox','0 0 '+wr.width+' '+wr.height);
+      while(svg.firstChild) svg.removeChild(svg.firstChild);
+      var any=row.querySelector('.gram-node'); if(!any) return;
+      var baseY=any.getBoundingClientRect().top - wr.top; // 칩 상단 = 아크가 만나는 선
+      edges.forEach(function(e,i){
+        var a=byId[e.from], b=byId[e.to]; if(!a||!b) return;
+        var ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
+        var sx=(ra.left+ra.right)/2 - wr.left, ex=(rb.left+rb.right)/2 - wr.left;
+        var color=PAL[i%PAL.length];
+        // 아크 높이. 위쪽에 라벨 글자가 잘리지 않도록 apex는 최소 24px(=baseY-24 상한)까지만.
+        var apexY=baseY - Math.max(16, Math.min(baseY-24, 22 + Math.abs(ex-sx)*0.34));
+        var p=sv('path');
+        p.setAttribute('d','M '+sx+' '+baseY+' C '+sx+' '+apexY+', '+ex+' '+apexY+', '+ex+' '+baseY);
+        p.setAttribute('fill','none'); p.setAttribute('stroke',color);
+        p.setAttribute('stroke-width','1.8'); p.setAttribute('opacity','.7');
+        svg.appendChild(p);
+        var ah=sv('path'); // dependent(도착) 쪽 화살표
+        ah.setAttribute('d','M '+(ex-4)+' '+(baseY-7)+' L '+ex+' '+(baseY-1)+' L '+(ex+4)+' '+(baseY-7));
+        ah.setAttribute('fill','none'); ah.setAttribute('stroke',color);
+        ah.setAttribute('stroke-width','1.8'); ah.setAttribute('opacity','.7');
+        svg.appendChild(ah);
+        if(e.label){
+          var tx=sv('text'); tx.setAttribute('x',(sx+ex)/2); tx.setAttribute('y',apexY-2);
+          tx.setAttribute('text-anchor','middle'); tx.setAttribute('class','gram-label');
+          tx.setAttribute('fill',color); tx.textContent=e.label;
+          svg.appendChild(tx);
+        }
+      });
+    }
+    drawers.push(draw);
+    requestAnimationFrame(draw);
+  }
+
+  // 구성성분 트리: 의존 엣지에서 루트(들어오는 엣지 없는 노드=대개 본동사)를 찾아,
+  // 자식을 원문 순서로 정렬해 들여쓰기 트리로 그린다. 위계·내포가 명확하고 긴 문장에 강함.
+  function renderTree(host, nodes, edges){
+    var byId={}; nodes.forEach(function(n,i){ n.__i=i; byId[n.id]=n; });
+    var children={}, hasParent={};
+    edges.forEach(function(e){
+      if(!byId[e.from]||!byId[e.to]) return;
+      (children[e.from]=children[e.from]||[]).push({id:e.to, label:e.label});
+      hasParent[e.to]=true;
+    });
+    Object.keys(children).forEach(function(k){
+      children[k].sort(function(a,b){ return byId[a.id].__i - byId[b.id].__i; });
+    });
+    var roots=nodes.filter(function(n){ return !hasParent[n.id]; });
+    if(!roots.length && nodes.length) roots=[nodes[0]];
+    var seen={};
+    function build(nid, rel){
+      if(seen[nid]) return null; seen[nid]=1; // 사이클 방어
+      var n=byId[nid]; if(!n) return null;
+      var li=el('li','gt-node');
+      var head=el('div','gt-head');
+      if(rel) head.appendChild(el('span','gt-rel', rel));
+      head.appendChild(el('span','gt-text', n.text||''));
+      if(n.role && n.role!==rel) head.appendChild(el('span','gt-role', n.role));
+      li.appendChild(head);
+      var kids=children[nid];
+      if(kids && kids.length){
+        var ul=el('ul','gt-kids');
+        kids.forEach(function(k){ var c=build(k.id, k.label); if(c) ul.appendChild(c); });
+        if(ul.childNodes.length) li.appendChild(ul);
+      }
+      return li;
+    }
+    var rootUl=el('ul','gt-root');
+    roots.forEach(function(r){ var li=build(r.id, ''); if(li) rootUl.appendChild(li); });
+    host.appendChild(rootUl);
+  }
+
   function render(box, d){
     box.textContent='';
     var nodes=d.nodes||[], edges=d.edges||[];
     if(d.summary) box.appendChild(el('div','gram-summary','🔎 '+d.summary));
     if(nodes.length){
-      var scroll=el('div','gram-scroll');
-      var wrap=el('div','gram-wrap');
-      var svg=sv('svg'); svg.setAttribute('class','gram-svg'); wrap.appendChild(svg);
-      var row=el('div','gram-row'), byId={};
-      nodes.forEach(function(n){
-        var chip=el('div','gram-node');
-        chip.appendChild(el('span','gram-text', n.text||''));
-        if(n.role) chip.appendChild(el('span','gram-role', n.role));
-        row.appendChild(chip);
-        if(n.id) byId[n.id]=chip;
-      });
-      wrap.appendChild(row); scroll.appendChild(wrap); box.appendChild(scroll);
-
-      function draw(){
-        var wr=wrap.getBoundingClientRect();
-        svg.setAttribute('width',wr.width); svg.setAttribute('height',wr.height);
-        svg.setAttribute('viewBox','0 0 '+wr.width+' '+wr.height);
-        while(svg.firstChild) svg.removeChild(svg.firstChild);
-        var any=row.querySelector('.gram-node'); if(!any) return;
-        var baseY=any.getBoundingClientRect().top - wr.top; // 칩 상단 = 아크가 만나는 선
-        edges.forEach(function(e,i){
-          var a=byId[e.from], b=byId[e.to]; if(!a||!b) return;
-          var ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
-          var sx=(ra.left+ra.right)/2 - wr.left, ex=(rb.left+rb.right)/2 - wr.left;
-          var color=PAL[i%PAL.length];
-          // 아크 높이. 위쪽에 라벨 글자가 잘리지 않도록 apex는 최소 24px(=baseY-24 상한)까지만.
-          var apexY=baseY - Math.max(16, Math.min(baseY-24, 22 + Math.abs(ex-sx)*0.34));
-          var p=sv('path');
-          p.setAttribute('d','M '+sx+' '+baseY+' C '+sx+' '+apexY+', '+ex+' '+apexY+', '+ex+' '+baseY);
-          p.setAttribute('fill','none'); p.setAttribute('stroke',color);
-          p.setAttribute('stroke-width','1.8'); p.setAttribute('opacity','.7');
-          svg.appendChild(p);
-          var ah=sv('path'); // dependent(도착) 쪽 화살표
-          ah.setAttribute('d','M '+(ex-4)+' '+(baseY-7)+' L '+ex+' '+(baseY-1)+' L '+(ex+4)+' '+(baseY-7));
-          ah.setAttribute('fill','none'); ah.setAttribute('stroke',color);
-          ah.setAttribute('stroke-width','1.8'); ah.setAttribute('opacity','.7');
-          svg.appendChild(ah);
-          if(e.label){
-            var tx=sv('text'); tx.setAttribute('x',(sx+ex)/2); tx.setAttribute('y',apexY-2);
-            tx.setAttribute('text-anchor','middle'); tx.setAttribute('class','gram-label');
-            tx.setAttribute('fill',color); tx.textContent=e.label;
-            svg.appendChild(tx);
-          }
-        });
+      var toggle=el('div','gram-toggle');
+      var bArc=el('button','gv-btn','아크'), bTree=el('button','gv-btn','트리');
+      var view=el('div','gram-view');
+      function setMode(m){
+        bArc.classList.toggle('on', m==='arc'); bTree.classList.toggle('on', m==='tree');
+        view.textContent='';
+        if(m==='tree') renderTree(view, nodes, edges); else renderArc(view, nodes, edges);
       }
-      drawers.push(draw);
-      requestAnimationFrame(draw);
+      bArc.onclick=function(){ setMode('arc'); };
+      bTree.onclick=function(){ setMode('tree'); };
+      toggle.appendChild(bArc); toggle.appendChild(bTree);
+      box.appendChild(toggle); box.appendChild(view);
+      setMode(nodes.length > TREE_MIN ? 'tree' : 'arc'); // 길면 트리, 짧으면 아크
     }
     if(d.points && d.points.length){
       box.appendChild(el('div','gram-plabel','📖 문법 포인트'));
