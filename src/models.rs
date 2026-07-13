@@ -163,6 +163,9 @@ pub struct GramNode {
     /// 품사/구 유형(명사구/동사/전치사구 등), 선택.
     #[serde(default)]
     pub pos: String,
+    /// 이 조각의 짧은 우리말 뜻(초등학생도 이해할 쉬운 한국어).
+    #[serde(default)]
+    pub ko: String,
 }
 
 /// 문법 그래프 엣지: head(from)→dependent(to) 문법 관계.

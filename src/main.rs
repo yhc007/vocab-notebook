@@ -1487,7 +1487,15 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .gt-lead { display: inline-block; width: 1.05rem; flex: 0 0 auto; }
 .gt-rel { font-size: .64rem; font-weight: 700; color: #fff; background: var(--accent); border-radius: 6px; padding: .05rem .4rem; }
 .gt-text { font-weight: 600; }
+.gt-ko { font-size: .72rem; color: var(--muted); }
 .gt-role { font-size: .66rem; color: var(--muted); }
+/* 쉬운 뷰(색칠 문장) */
+.easy { display: flex; flex-direction: column; gap: .4rem; }
+.easy-part { display: flex; align-items: center; gap: .6rem; padding: .45rem .6rem;
+  background: rgba(255,255,255,.55); border: 1px solid var(--brd); border-left: 5px solid var(--muted); border-radius: 12px; }
+.easy-tag { flex: 0 0 auto; font-size: .74rem; font-weight: 700; color: #fff; border-radius: 8px; padding: .2rem .55rem; white-space: nowrap; }
+.easy-en { font-weight: 600; }
+.easy-ko { color: var(--muted); font-size: .92rem; margin-top: .1rem; }
 .gram-plabel { font-weight: 700; margin: .7rem 0 .35rem; }
 .gram-points { margin: 0; padding-left: 1.1rem; }
 .gram-points li { margin: .35rem 0; line-height: 1.5; }
@@ -2008,24 +2016,26 @@ const GRAPH_RENDER_JS: &str = r#"
   // 문법 역할 → 색. 라벨/역할 문자열에 키워드가 있으면 그 색을 준다(순서=우선순위).
   // 아크(선·라벨)와 트리(역할 배지)가 같은 색 언어를 공유해 색만 봐도 역할을 알 수 있다.
   var ROLE_COLORS=[
-    {k:['주어'],                c:'#0a84ff', n:'주어'},
-    {k:['술어','동사'],          c:'#ff375f', n:'술어'},
-    {k:['목적'],                c:'#30d158', n:'목적어'},
-    {k:['보어'],                c:'#ff9f0a', n:'보어'},
-    {k:['관계절'],              c:'#5e5ce6', n:'관계절'},
-    {k:['관사'],                c:'#8e8e93', n:'기능어'}, // 수식보다 앞: '수식(관사)'도 회색
-    {k:['수식'],                c:'#bf5af2', n:'수식'},
-    {k:['병렬','대등','등위'],     c:'#a2845e', n:'병렬'},
-    {k:['종속','접속','절'],       c:'#0aa2c0', n:'종속/절'},
-    {k:['전치','한정','관계대명사'], c:'#8e8e93', n:'기능어'}
+    {k:['주어'],                c:'#0a84ff', n:'주어',   kid:'👤 누가·무엇이'},
+    {k:['술어','동사'],          c:'#ff375f', n:'술어',   kid:'🏃 한다·이다'},
+    {k:['목적'],                c:'#30d158', n:'목적어', kid:'🎯 무엇을'},
+    {k:['보어'],                c:'#ff9f0a', n:'보어',   kid:'✨ 어떠한지'},
+    {k:['관계절'],              c:'#5e5ce6', n:'관계절', kid:'🔍 자세히 설명'},
+    {k:['관사'],                c:'#8e8e93', n:'기능어', kid:'🔧 작은 말'}, // 수식보다 앞: '수식(관사)'도 회색
+    {k:['수식'],                c:'#bf5af2', n:'수식',   kid:'🎨 꾸며 주는 말'},
+    {k:['병렬','대등','등위'],     c:'#a2845e', n:'병렬',   kid:'➕ 나란히'},
+    {k:['종속','접속','절'],       c:'#0aa2c0', n:'종속/절', kid:'🔗 이어 주는 말'},
+    {k:['전치','한정','관계대명사'], c:'#8e8e93', n:'기능어', kid:'🔧 작은 말'}
   ];
-  function roleColor(s){
+  var ROLE_DEFAULT={c:'#8e8e93', n:'기능어', kid:'🔧 작은 말'};
+  function roleInfo(s){
     s=s||'';
     for(var i=0;i<ROLE_COLORS.length;i++){
-      for(var j=0;j<ROLE_COLORS[i].k.length;j++){ if(s.indexOf(ROLE_COLORS[i].k[j])>=0) return ROLE_COLORS[i].c; }
+      for(var j=0;j<ROLE_COLORS[i].k.length;j++){ if(s.indexOf(ROLE_COLORS[i].k[j])>=0) return ROLE_COLORS[i]; }
     }
-    return '#8e8e93';
+    return ROLE_DEFAULT;
   }
+  function roleColor(s){ return roleInfo(s).c; }
   function legendEl(){
     var lg=el('div','gram-legend'), seen={};
     ROLE_COLORS.forEach(function(b){
@@ -2047,6 +2057,7 @@ const GRAPH_RENDER_JS: &str = r#"
     var row=el('div','gram-row'), byId={};
     nodes.forEach(function(n){
       var chip=el('div','gram-node');
+      if(n.ko) chip.title=n.ko; // 마우스 올리면 우리말 뜻
       chip.appendChild(el('span','gram-text', n.text||''));
       if(n.role){ var rr=el('span','gram-role', n.role); rr.style.color=roleColor(n.role); chip.appendChild(rr); }
       row.appendChild(chip);
@@ -2131,6 +2142,7 @@ const GRAPH_RENDER_JS: &str = r#"
       }
       if(rel){ var rp=el('span','gt-rel', rel); rp.style.background=roleColor(rel); head.appendChild(rp); }
       head.appendChild(el('span','gt-text', n.text||''));
+      if(n.ko) head.appendChild(el('span','gt-ko', n.ko));
       if(n.role && n.role!==rel){ var rr=el('span','gt-role', n.role); rr.style.color=roleColor(n.role); head.appendChild(rr); }
       li.appendChild(head);
       if(sub) li.appendChild(sub);
@@ -2141,6 +2153,39 @@ const GRAPH_RENDER_JS: &str = r#"
     host.appendChild(rootUl);
   }
 
+  // 쉬운 뷰(초등학생용): 다이어그램 없이, 문장의 큰 덩어리(주절 본동사 + 그 직속 성분)를
+  // 원문 순서대로 색칠 카드로 보여준다 — 쉬운 말 라벨 + 영어 + 우리말 뜻.
+  function renderEasy(host, nodes, edges){
+    var byId={}; nodes.forEach(function(n,i){ n.__i=i; byId[n.id]=n; });
+    var children={}, hasParent={};
+    edges.forEach(function(e){
+      if(!byId[e.from]||!byId[e.to]) return;
+      (children[e.from]=children[e.from]||[]).push(e.to); hasParent[e.to]=true;
+    });
+    var roots=nodes.filter(function(n){ return !hasParent[n.id]; });
+    if(!roots.length && nodes.length) roots=[nodes[0]];
+    // 최상위 덩어리 = 루트(본동사) + 루트의 직속 자식. 원문 순서로 정렬.
+    var ids=[], seen={};
+    roots.forEach(function(r){
+      [r.id].concat(children[r.id]||[]).forEach(function(id){ if(!seen[id]){ seen[id]=1; ids.push(id); } });
+    });
+    ids.sort(function(a,b){ return byId[a].__i - byId[b].__i; });
+
+    var wrap=el('div','easy');
+    ids.forEach(function(id){
+      var n=byId[id], info=roleInfo(n.role);
+      var card=el('div','easy-part'); card.style.borderLeftColor=info.c;
+      var tag=el('span','easy-tag', info.kid); tag.style.background=info.c;
+      var body=el('div','easy-body');
+      body.appendChild(el('div','easy-en', n.text||''));
+      if(n.ko) body.appendChild(el('div','easy-ko', n.ko));
+      card.appendChild(tag); card.appendChild(body);
+      wrap.appendChild(card);
+    });
+    if(!ids.length) wrap.appendChild(el('div','muted','보여줄 내용이 없어요.'));
+    host.appendChild(wrap);
+  }
+
   function render(box, d){
     box.textContent='';
     var nodes=d.nodes||[], edges=d.edges||[];
@@ -2148,16 +2193,19 @@ const GRAPH_RENDER_JS: &str = r#"
     if(nodes.length){
       var bar=el('div','gram-bar');
       var toggle=el('div','gram-toggle');
-      var bArc=el('button','gv-btn','아크'), bTree=el('button','gv-btn','트리');
+      var bEasy=el('button','gv-btn','🌱 쉬운'), bArc=el('button','gv-btn','아크'), bTree=el('button','gv-btn','트리');
       var view=el('div','gram-view');
       function setMode(m){
-        bArc.classList.toggle('on', m==='arc'); bTree.classList.toggle('on', m==='tree');
+        bEasy.classList.toggle('on', m==='easy'); bArc.classList.toggle('on', m==='arc'); bTree.classList.toggle('on', m==='tree');
         view.textContent='';
-        if(m==='tree') renderTree(view, nodes, edges); else renderArc(view, nodes, edges);
+        if(m==='tree') renderTree(view, nodes, edges);
+        else if(m==='easy') renderEasy(view, nodes, edges);
+        else renderArc(view, nodes, edges);
       }
+      bEasy.onclick=function(){ setMode('easy'); };
       bArc.onclick=function(){ setMode('arc'); };
       bTree.onclick=function(){ setMode('tree'); };
-      toggle.appendChild(bArc); toggle.appendChild(bTree);
+      toggle.appendChild(bEasy); toggle.appendChild(bArc); toggle.appendChild(bTree);
       // 캐시 무시하고 재분석(프롬프트 개선 후 낡은 결과 갱신용). 성공 시 박스 전체 재렌더.
       var bRe=el('button','gv-refresh','🔄 다시 분석');
       bRe.onclick=function(){
@@ -2169,7 +2217,7 @@ const GRAPH_RENDER_JS: &str = r#"
       };
       bar.appendChild(toggle); bar.appendChild(bRe);
       box.appendChild(bar); box.appendChild(legendEl()); box.appendChild(view);
-      setMode(nodes.length > TREE_MIN ? 'tree' : 'arc'); // 길면 트리, 짧으면 아크
+      setMode('easy'); // 기본은 쉬운 뷰(초등학생 우선). 아크/트리는 클릭으로.
     }
     if(d.points && d.points.length){
       box.appendChild(el('div','gram-plabel','📖 문법 포인트'));

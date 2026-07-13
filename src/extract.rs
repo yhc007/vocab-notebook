@@ -240,7 +240,8 @@ impl Extractor {
             "다음 영어 문장을 '문법 강의의 도입부'로 삼을 수 있게 구조 그래프로 분해하라.\n\
              - nodes: 문장을 의미 단위(단어/구)로 나눈 노드. 각 node는 id(\"n1\",\"n2\"..), \
                text(원문 조각 그대로), role(한국어 문법 역할: 주어/술어/목적어/보어/수식어/접속 등), \
-               pos(품사나 구 유형: 명사구/동사/전치사구 등).\n\
+               pos(품사나 구 유형: 명사구/동사/전치사구 등), \
+               ko(그 조각의 짧은 우리말 뜻 — 초등학생도 이해할 쉬운 한국어).\n\
              - edges: head→dependent 문법 관계. from/to는 node id, label은 관계명(주어·목적어·\
                수식·종속절·병렬 등 한국어). 루트(문장의 주절 본동사) 하나를 제외하고 모든 노드는 \
                정확히 하나의 head에 연결하라(수식어·전치사·관계사·관사·접속사 포함). 고립된 \
@@ -252,12 +253,12 @@ impl Extractor {
                이스케이프되지 않은 큰따옴표를 절대 넣지 말 것.\n\
              - 각 최상위 키(summary/nodes/edges/points)는 정확히 한 번만 출력(중복 금지).\n\
              - 반드시 아래 JSON 스키마로만 응답:\n\
-             {{\"summary\":\"\",\"nodes\":[{{\"id\":\"\",\"text\":\"\",\"role\":\"\",\"pos\":\"\"}}],\
+             {{\"summary\":\"\",\"nodes\":[{{\"id\":\"\",\"text\":\"\",\"role\":\"\",\"pos\":\"\",\"ko\":\"\"}}],\
              \"edges\":[{{\"from\":\"\",\"to\":\"\",\"label\":\"\"}}],\"points\":[\"\"]}}\n\n\
              === 문장 ===\n{sentence}",
         );
 
-        let content = self.message(&prompt, 4096).await?;
+        let content = self.message(&prompt, 6000).await?;
         let json_str = extract_json_block(&content);
         // 모델이 이따금 같은 키(summary 등)를 중복 출력한다. 구조체로 직접 파싱하면
         // serde가 중복 필드에서 에러를 내므로, Value로 먼저 파싱해(중복 키는 마지막 값으로
