@@ -938,13 +938,17 @@ async fn sentence_grammar(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError("text가 필요합니다".into()))?;
 
-    if let Some(cached) = st
-        .db
-        .get_sentence_grammar(&text)
-        .await
-        .map_err(AppError::from)?
-    {
-        return Ok(json_response(cached));
+    // refresh=1이면 캐시를 무시하고 재생성(프롬프트 개선 후 낡은 캐시 갱신용).
+    let refresh = q.get("refresh").map(|v| v == "1").unwrap_or(false);
+    if !refresh {
+        if let Some(cached) = st
+            .db
+            .get_sentence_grammar(&text)
+            .await
+            .map_err(AppError::from)?
+        {
+            return Ok(json_response(cached));
+        }
     }
 
     let analysis = st
@@ -1452,8 +1456,13 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
 .gram-text { font-weight: 600; }
 .gram-role { font-size: .68rem; color: var(--accent); }
 .gram-label { font-size: 10px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
-.gram-toggle { display: inline-flex; gap: .15rem; margin-bottom: .5rem; padding: .12rem;
+.gram-bar { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
+.gram-toggle { display: inline-flex; gap: .15rem; padding: .12rem;
   background: rgba(255,255,255,.4); border: 1px solid var(--brd); border-radius: 10px; }
+.gv-refresh { cursor: pointer; font-size: .72rem; font-weight: 600; color: var(--muted);
+  background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 8px; padding: .18rem .6rem; transition: background .15s; }
+.gv-refresh:hover { background: #fff; }
+.gv-refresh:disabled { opacity: .6; cursor: default; }
 .gv-btn { cursor: pointer; font-size: .74rem; font-weight: 600; color: var(--muted);
   background: transparent; border: 0; border-radius: 8px; padding: .12rem .65rem; transition: background .15s; }
 .gv-btn.on { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
@@ -2137,6 +2146,7 @@ const GRAPH_RENDER_JS: &str = r#"
     var nodes=d.nodes||[], edges=d.edges||[];
     if(d.summary) box.appendChild(el('div','gram-summary','🔎 '+d.summary));
     if(nodes.length){
+      var bar=el('div','gram-bar');
       var toggle=el('div','gram-toggle');
       var bArc=el('button','gv-btn','아크'), bTree=el('button','gv-btn','트리');
       var view=el('div','gram-view');
@@ -2148,7 +2158,17 @@ const GRAPH_RENDER_JS: &str = r#"
       bArc.onclick=function(){ setMode('arc'); };
       bTree.onclick=function(){ setMode('tree'); };
       toggle.appendChild(bArc); toggle.appendChild(bTree);
-      box.appendChild(toggle); box.appendChild(legendEl()); box.appendChild(view);
+      // 캐시 무시하고 재분석(프롬프트 개선 후 낡은 결과 갱신용). 성공 시 박스 전체 재렌더.
+      var bRe=el('button','gv-refresh','🔄 다시 분석');
+      bRe.onclick=function(){
+        bRe.disabled=true; bRe.textContent='분석 중…';
+        fetch('/sentences/grammar?refresh=1&text='+encodeURIComponent(box.dataset.text))
+          .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+          .then(function(nd){ render(box, nd); })
+          .catch(function(){ bRe.disabled=false; bRe.textContent='🔄 다시 분석'; });
+      };
+      bar.appendChild(toggle); bar.appendChild(bRe);
+      box.appendChild(bar); box.appendChild(legendEl()); box.appendChild(view);
       setMode(nodes.length > TREE_MIN ? 'tree' : 'arc'); // 길면 트리, 짧으면 아크
     }
     if(d.points && d.points.length){
