@@ -1444,7 +1444,7 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
 .gram-scroll { overflow-x: auto; padding-bottom: .2rem; }
 .gram-wrap { position: relative; display: inline-block; min-width: 100%; }
 .gram-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-.gram-row { display: flex; flex-wrap: nowrap; align-items: flex-end; gap: .5rem; padding-top: 74px; }
+.gram-row { display: flex; flex-wrap: nowrap; align-items: flex-end; gap: .5rem; padding-top: 92px; }
 .gram-node { display: flex; flex-direction: column; align-items: center; gap: .15rem;
   background: rgba(255,255,255,.75); border: 1px solid var(--brd); border-radius: 12px;
   padding: .3rem .55rem; white-space: nowrap; }
@@ -1997,7 +1997,8 @@ const GRAPH_RENDER_JS: &str = r#"
           var ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
           var sx=(ra.left+ra.right)/2 - wr.left, ex=(rb.left+rb.right)/2 - wr.left;
           var color=PAL[i%PAL.length];
-          var apexY=Math.max(6, baseY - Math.max(14, Math.min(baseY-6, 18 + Math.abs(ex-sx)*0.32)));
+          // 아크 높이. 위쪽에 라벨 글자가 잘리지 않도록 apex는 최소 24px(=baseY-24 상한)까지만.
+          var apexY=baseY - Math.max(16, Math.min(baseY-24, 22 + Math.abs(ex-sx)*0.34));
           var p=sv('path');
           p.setAttribute('d','M '+sx+' '+baseY+' C '+sx+' '+apexY+', '+ex+' '+apexY+', '+ex+' '+baseY);
           p.setAttribute('fill','none'); p.setAttribute('stroke',color);
