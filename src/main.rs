@@ -1457,6 +1457,9 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
 .gv-btn { cursor: pointer; font-size: .74rem; font-weight: 600; color: var(--muted);
   background: transparent; border: 0; border-radius: 8px; padding: .12rem .65rem; transition: background .15s; }
 .gv-btn.on { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
+.gram-legend { display: flex; flex-wrap: wrap; gap: .25rem .7rem; margin-bottom: .55rem; font-size: .7rem; color: var(--muted); }
+.gram-legend span { display: inline-flex; align-items: center; gap: .25rem; }
+.gram-legend i { width: .7rem; height: .7rem; border-radius: 3px; display: inline-block; }
 ul.gt-root, ul.gt-kids { list-style: none; margin: 0; padding: 0; }
 ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .gt-node { position: relative; margin: .2rem 0; }
@@ -1993,6 +1996,33 @@ const GRAPH_RENDER_JS: &str = r#"
   function el(t,c,x){ var e=document.createElement(t); if(c)e.className=c; if(x!=null)e.textContent=x; return e; }
   function sv(n){ return document.createElementNS(NS,n); }
 
+  // 문법 역할 → 색. 라벨/역할 문자열에 키워드가 있으면 그 색을 준다(순서=우선순위).
+  // 아크(선·라벨)와 트리(역할 배지)가 같은 색 언어를 공유해 색만 봐도 역할을 알 수 있다.
+  var ROLE_COLORS=[
+    {k:['주어'],                c:'#0a84ff', n:'주어'},
+    {k:['술어','동사'],          c:'#ff375f', n:'술어'},
+    {k:['목적'],                c:'#30d158', n:'목적어'},
+    {k:['보어'],                c:'#ff9f0a', n:'보어'},
+    {k:['수식'],                c:'#bf5af2', n:'수식'},
+    {k:['접속','종속','병렬','절'], c:'#0aa2c0', n:'접속/절'},
+    {k:['전치','관사','한정','관계대명사'], c:'#8e8e93', n:'기능어'}
+  ];
+  function roleColor(s){
+    s=s||'';
+    for(var i=0;i<ROLE_COLORS.length;i++){
+      for(var j=0;j<ROLE_COLORS[i].k.length;j++){ if(s.indexOf(ROLE_COLORS[i].k[j])>=0) return ROLE_COLORS[i].c; }
+    }
+    return '#8e8e93';
+  }
+  function legendEl(){
+    var lg=el('div','gram-legend');
+    ROLE_COLORS.forEach(function(b){
+      var it=el('span'); var sw=el('i'); sw.style.background=b.c;
+      it.appendChild(sw); it.appendChild(document.createTextNode(b.n)); lg.appendChild(it);
+    });
+    return lg;
+  }
+
   // 짧은 문장은 아크(어순+관계), 노드가 이보다 많으면 기본을 트리(위계)로.
   var TREE_MIN=12;
 
@@ -2005,7 +2035,7 @@ const GRAPH_RENDER_JS: &str = r#"
     nodes.forEach(function(n){
       var chip=el('div','gram-node');
       chip.appendChild(el('span','gram-text', n.text||''));
-      if(n.role) chip.appendChild(el('span','gram-role', n.role));
+      if(n.role){ var rr=el('span','gram-role', n.role); rr.style.color=roleColor(n.role); chip.appendChild(rr); }
       row.appendChild(chip);
       if(n.id) byId[n.id]=chip;
     });
@@ -2022,7 +2052,7 @@ const GRAPH_RENDER_JS: &str = r#"
         var a=byId[e.from], b=byId[e.to]; if(!a||!b) return;
         var ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
         var sx=(ra.left+ra.right)/2 - wr.left, ex=(rb.left+rb.right)/2 - wr.left;
-        var color=PAL[i%PAL.length];
+        var color=roleColor(e.label); // 관계 종류(주어·목적어·수식…)별 색
         // 아크 높이. 위쪽에 라벨 글자가 잘리지 않도록 apex는 최소 24px(=baseY-24 상한)까지만.
         var apexY=baseY - Math.max(16, Math.min(baseY-24, 22 + Math.abs(ex-sx)*0.34));
         var p=sv('path');
@@ -2086,9 +2116,9 @@ const GRAPH_RENDER_JS: &str = r#"
       } else {
         head.appendChild(el('span','gt-lead')); // 리프: 토글 자리 정렬용 여백
       }
-      if(rel) head.appendChild(el('span','gt-rel', rel));
+      if(rel){ var rp=el('span','gt-rel', rel); rp.style.background=roleColor(rel); head.appendChild(rp); }
       head.appendChild(el('span','gt-text', n.text||''));
-      if(n.role && n.role!==rel) head.appendChild(el('span','gt-role', n.role));
+      if(n.role && n.role!==rel){ var rr=el('span','gt-role', n.role); rr.style.color=roleColor(n.role); head.appendChild(rr); }
       li.appendChild(head);
       if(sub) li.appendChild(sub);
       return li;
@@ -2114,7 +2144,7 @@ const GRAPH_RENDER_JS: &str = r#"
       bArc.onclick=function(){ setMode('arc'); };
       bTree.onclick=function(){ setMode('tree'); };
       toggle.appendChild(bArc); toggle.appendChild(bTree);
-      box.appendChild(toggle); box.appendChild(view);
+      box.appendChild(toggle); box.appendChild(legendEl()); box.appendChild(view);
       setMode(nodes.length > TREE_MIN ? 'tree' : 'arc'); // 길면 트리, 짧으면 아크
     }
     if(d.points && d.points.length){
