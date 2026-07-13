@@ -198,8 +198,12 @@ async fn sentence_grammar(
 - main: `GET /sentences/point?text=&point=` (캐시→생성→저장). 프론트: 포인트 li에
   `pt-btn` + 지연 로드 + `renderDetail`(설명 + en/ko 예문), CSS `.pt-*`.
 
-**미구현(후속 옵션)**: `/review` 덱처럼 문장 문법을 플래시카드로 넘기는 **복습 모드**
-(별도 페이지라 규모가 큼).
+**구현됨(복습 모드)**: `/sentences/review` — 모든 베스트 문장을 덱으로 셔플해 한 장씩
+보여주고, '구조 보기' 시 `/sentences/grammar`(캐시)로 아크 그래프+요약+포인트를 그린다
+(`/review` 덱 패턴 미러). 그래프 렌더 로직은 공유 모듈 `GRAPH_RENDER_JS`
+(`window.gramRender`)로 분리해 `/sentences` 버튼과 복습 페이지가 함께 쓴다. 커밋 `2d25666`.
+
+이로써 계획된 문법 그래프 기능(단계 0~4 + 복습 모드)이 모두 구현됨.
 
 ---
 
