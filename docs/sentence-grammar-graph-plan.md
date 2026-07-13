@@ -186,14 +186,20 @@ async fn sentence_grammar(
 
 ---
 
-## 단계 4 (옵션) — "강의"로 확장
+## 단계 4 — "강의"로 확장 (일부 구현됨 ✅)
 
-v1은 그래프 + 포인트(도입부)까지. 필요 시:
-- 각 `point`에 "자세히" → 포인트별 상세 설명을 추가 Claude 호출로 지연 로드(캐시).
-- 예문 변형(같은 문법 구조의 다른 예문 생성)으로 연습 제공.
-- `/review` 덱처럼 문장 문법 카드 모드.
+**구현됨**: 각 `point` 옆 "자세히" → 그 포인트를 강의체로 상세 설명 + 같은 문법 구조의 새
+연습 예문(영어+한국어)을 **지연 로드·캐시**. 클릭할 때만 Claude를 호출하므로 기본 비용
+증가 없음(요청 시 과금).
+- models: `GramExample{en,ko}`, `PointDetail{explanation, examples}`.
+- db: `vocab.point_detail(pkey PK, detail, created_at)` + `get/save_point_detail`. 키는
+  문장+포인트 결합 해시(`sentence_key` 재사용)라 CQL 안전.
+- extract: `analyze_point(sentence, point)` — Value 선파싱(중복 키 방어) + 「 」 인용 가드.
+- main: `GET /sentences/point?text=&point=` (캐시→생성→저장). 프론트: 포인트 li에
+  `pt-btn` + 지연 로드 + `renderDetail`(설명 + en/ko 예문), CSS `.pt-*`.
 
-비용이 늘므로 기본 off, 요청 시. (extraction CoT 계획의 단계 2와 같은 정책.)
+**미구현(후속 옵션)**: `/review` 덱처럼 문장 문법을 플래시카드로 넘기는 **복습 모드**
+(별도 페이지라 규모가 큼).
 
 ---
 
@@ -212,12 +218,27 @@ v1은 그래프 + 포인트(도입부)까지. 필요 시:
    - `/sentences`에서 버튼 클릭 시 아크 그래프가 그려지고 role/label이 한국어로 붙나?
    - 두 번째 호출은 캐시로 즉시 반환되나(같은 text)?
 
+### 실제 검증 결과 (2026-07-13, 리눅스 aarch64, rustc 1.94)
+단계 0~4 모두 라이브(persistent CoreDB + `read.coreon.build`)에서 구동해 확인. 관련 커밋:
+`7312f94`(단계 0~2 백엔드), `d3d61f3`(단계 3 렌더), `371da3b`(단계 4 포인트 상세).
+
+- **그래프 생성**: 저장된 4문장 전부 + 신규 문장으로 `/sentences/grammar` 200 OK. 종속절·
+  관계절·조건절이 nodes/edges/points로 분해되고 role/label이 한국어로 붙음.
+- **캐시**: 2차 호출 0.06초 히트, 반복 읽기 바이트 동일(생성은 문장당 1회).
+- **포인트 상세**: `/sentences/point`로 강의체 설명 + 같은 구조 예문(EN/KO) 3개 생성, 캐시 히트.
+- **프론트**: `/sentences`에 버튼·컨테이너·아크 JS 주입 확인, 임베드 JS `node --check` 통과.
+
+통합 중 발견해 고친 3건(모두 라이브에서 실제로 재현): (1) `max_tokens` 1536→4096(상세
+응답 잘림), (2) 모델의 최상위 키 중복 → `Value` 선파싱으로 방어, (3) 긴 자유문장을 CQL
+리터럴/PK로 쓰면 CoreDB가 문자열 속 `AND`/`AS`를 조건으로 오해 → 문장 키를 FNV-1a
+해시(`sentence_key`)로 변경.
+
 ### 완료 기준 (Acceptance)
-- [ ] `cargo check`/`clippy`/`test` 통과, 기존 추출 흐름 무변경
-- [ ] 새 캐시 테이블 bootstrap idempotent(already-exists 무시), 단일 PK 덮어쓰기 동작
-- [ ] 인용부호 포함 문장에서 grammar JSON 파싱 성공(「 」 가드 유효)
-- [ ] `/sentences`에서 문장별 그래프 + 강의 포인트가 렌더되고, 재조회는 캐시 히트
-- [ ] (옵션) 단계 4는 기본 off
+- [x] `cargo check`/`clippy`/`test` 통과, 기존 추출 흐름 무변경
+- [x] 새 캐시 테이블 bootstrap idempotent(already-exists 무시), 단일 PK 덮어쓰기 동작
+- [x] 인용부호 포함 문장에서 grammar JSON 파싱 성공(「 」 가드 유효)
+- [x] `/sentences`에서 문장별 그래프 + 강의 포인트가 렌더되고, 재조회는 캐시 히트
+- [x] 단계 4(포인트 상세)는 클릭 시에만 호출(기본 비용 증가 없음); 복습 모드는 후속
 
 ---
 
@@ -227,4 +248,7 @@ v1은 그래프 + 포인트(도입부)까지. 필요 시:
   틀린 관계가 보이면 role/label을 사람이 정정할 여지를 UI에 남길 수 있다(후속).
 - CoreDB 제약(HTTP `/query`, 바인드 파라미터 없음, 복합 PK DELETE 미동작)은 캐시가
   **단일 PK**라 무관하지만, 값 인라인 시 `cql_str`로 따옴표/`'` 처리 필수.
+- **긴 자유문장을 CQL 리터럴/PK로 직접 쓰지 말 것.** CoreDB의 제한적 파서가 문자열 안의
+  `AND`/`AS` 같은 토큰을 조건으로 오해해 `WHERE`가 깨진다(실제로 발생). 문장 기반 키는
+  반드시 `sentence_key`(FNV-1a hex) 같은 해시로 만든다.
 - 프롬프트·주석·UI 문구는 프로젝트 관례상 **한국어** 유지.
