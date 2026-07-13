@@ -1342,6 +1342,7 @@ const CSS: &str = "\
   --ink: #14142b; --muted: #5b5b78; --accent: #0a84ff; --accent2: #bf5af2;
   --glass: rgba(255,255,255,.55); --glass-2: rgba(255,255,255,.38);
   --brd: rgba(255,255,255,.7); --shadow: 0 10px 40px rgba(31,38,135,.18);
+  --gtline: rgba(60,60,90,.32);
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -1457,10 +1458,21 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
   background: transparent; border: 0; border-radius: 8px; padding: .12rem .65rem; transition: background .15s; }
 .gv-btn.on { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
 ul.gt-root, ul.gt-kids { list-style: none; margin: 0; padding: 0; }
-ul.gt-kids { margin: .1rem 0 .1rem .5rem; padding-left: .9rem; border-left: 2px solid var(--brd); }
-.gt-node { margin: .25rem 0; }
-.gt-head { display: inline-flex; align-items: baseline; gap: .4rem;
-  background: rgba(255,255,255,.72); border: 1px solid var(--brd); border-radius: 10px; padding: .2rem .55rem; }
+ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
+.gt-node { position: relative; margin: .2rem 0; }
+/* 파일트리식 연결선: 자식마다 세로선(위→가지선) + 가로 가지선. 마지막 자식은 가지선까지만. */
+.gt-kids > .gt-node::before { content: ''; position: absolute; left: -.5rem; top: 0; height: 100%;
+  border-left: 1.5px solid var(--gtline); }
+.gt-kids > .gt-node:last-child::before { height: .8rem; }
+.gt-kids > .gt-node::after { content: ''; position: absolute; left: -.5rem; top: .8rem; width: .5rem;
+  border-top: 1.5px solid var(--gtline); }
+.gt-head { display: inline-flex; align-items: center; gap: .35rem;
+  background: rgba(255,255,255,.72); border: 1px solid var(--brd); border-radius: 10px; padding: .18rem .5rem; }
+.gt-toggle { cursor: pointer; flex: 0 0 auto; width: 1.05rem; height: 1.05rem; padding: 0; line-height: 1;
+  font-size: .82rem; font-weight: 700; color: var(--accent); background: rgba(255,255,255,.6);
+  border: 1px solid var(--brd); border-radius: 5px; }
+.gt-toggle:hover { background: #fff; }
+.gt-lead { display: inline-block; width: 1.05rem; flex: 0 0 auto; }
 .gt-rel { font-size: .64rem; font-weight: 700; color: #fff; background: var(--accent); border-radius: 6px; padding: .05rem .4rem; }
 .gt-text { font-weight: 600; }
 .gt-role { font-size: .66rem; color: var(--muted); }
@@ -1700,6 +1712,7 @@ ul.gt-kids { margin: .1rem 0 .1rem .5rem; padding-left: .9rem; border-left: 2px 
     --ink: #f2f2fa; --muted: #b9b9d0;
     --glass: rgba(30,30,50,.5); --glass-2: rgba(30,30,50,.4);
     --brd: rgba(255,255,255,.14); --shadow: 0 10px 40px rgba(0,0,0,.45);
+    --gtline: rgba(255,255,255,.28);
   }
   body { background: linear-gradient(135deg, #10131f 0%, #1a1030 45%, #2a1030 78%, #101828 100%) fixed; }
   nav a:hover, .chip:hover { background: rgba(255,255,255,.12); }
@@ -2055,16 +2068,29 @@ const GRAPH_RENDER_JS: &str = r#"
       var n=byId[nid]; if(!n) return null;
       var li=el('li','gt-node');
       var head=el('div','gt-head');
+      // 자식을 먼저 만들어(재귀) sub에 담고, 있으면 +/- 토글을 붙인다.
+      var kids=children[nid], sub=null;
+      if(kids && kids.length){
+        sub=el('ul','gt-kids');
+        kids.forEach(function(k){ var c=build(k.id, k.label); if(c) sub.appendChild(c); });
+        if(!sub.childNodes.length) sub=null;
+      }
+      if(sub){
+        var tg=el('button','gt-toggle','−');
+        tg.setAttribute('aria-label','접기/펼치기');
+        tg.onclick=function(){
+          if(sub.hasAttribute('hidden')){ sub.removeAttribute('hidden'); tg.textContent='−'; }
+          else { sub.setAttribute('hidden',''); tg.textContent='+'; }
+        };
+        head.appendChild(tg);
+      } else {
+        head.appendChild(el('span','gt-lead')); // 리프: 토글 자리 정렬용 여백
+      }
       if(rel) head.appendChild(el('span','gt-rel', rel));
       head.appendChild(el('span','gt-text', n.text||''));
       if(n.role && n.role!==rel) head.appendChild(el('span','gt-role', n.role));
       li.appendChild(head);
-      var kids=children[nid];
-      if(kids && kids.length){
-        var ul=el('ul','gt-kids');
-        kids.forEach(function(k){ var c=build(k.id, k.label); if(c) ul.appendChild(c); });
-        if(ul.childNodes.length) li.appendChild(ul);
-      }
+      if(sub) li.appendChild(sub);
       return li;
     }
     var rootUl=el('ul','gt-root');
