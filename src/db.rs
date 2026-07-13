@@ -222,6 +222,39 @@ impl Db {
         Ok(out)
     }
 
+    /// list_words와 같되 created_at(epoch millis)까지 반환한다(날짜별 인쇄용).
+    /// 반환: (카테고리, term, definition, example, created_at).
+    #[allow(clippy::type_complexity)]
+    pub async fn list_words_dated(
+        &self,
+        cat: Option<Category>,
+    ) -> Result<Vec<(Category, String, String, String, i64)>> {
+        let deleted = self.deleted_entry_ids().await?;
+        let cats: Vec<Category> = cat.map_or_else(|| Category::ALL.to_vec(), |c| vec![c]);
+        let mut out = Vec::new();
+        for c in cats {
+            let cql = format!(
+                "SELECT term, definition, example, entry_id, created_at \
+                 FROM vocab.words WHERE category = {}",
+                cql_str(c.as_str())
+            );
+            let v = self.exec(&cql).await?;
+            for r in rows(&v) {
+                if is_deleted(r, &deleted) {
+                    continue;
+                }
+                out.push((
+                    c,
+                    text(r, "term"),
+                    text(r, "definition"),
+                    text(r, "example"),
+                    ts_col(r, "created_at").unwrap_or(0),
+                ));
+            }
+        }
+        Ok(out)
+    }
+
     /// 카테고리별 베스트 문장 조회. cat=None이면 전체.
     /// 삭제된 기사에서 나온 문장은 제외한다. 반환: (카테고리, text, reason).
     pub async fn list_sentences(

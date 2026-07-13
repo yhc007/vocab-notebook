@@ -538,8 +538,13 @@ async fn list_words(
     body.push_str(&format!(
         "<div class=\"export\">내보내기 · <a href=\"/export/words.csv{q}\">CSV</a> · \
          <a href=\"/export/words.tsv{q}\">Anki(TSV)</a> · \
-         <a href=\"/words/print{q}\">🖨 PDF 인쇄</a></div>",
+         <a href=\"/words/print{q}\">🖨 PDF 인쇄</a> · \
+         <a href=\"/words/print{qd}\">📅 날짜별 인쇄</a></div>",
         q = cat_query(cat),
+        qd = match cat {
+            Some(c) => format!("?category={}&by=date", c.as_str()),
+            None => "?by=date".to_string(),
+        },
     ));
     if words.is_empty() {
         body.push_str("<p class=\"empty\">아직 단어가 없습니다. <a href=\"/\">본문을 붙여넣어</a> 추출해 보세요.</p>");
@@ -585,13 +590,23 @@ async fn print_words(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, AppError> {
     let cat = q.get("category").and_then(|s| Category::parse(s));
-    let mut words = st.db.list_words(cat).await.map_err(AppError::from)?;
-    // 인쇄물은 알파벳순(대소문자 무시)으로 정렬해 사전처럼 찾아보기 쉽게 한다.
-    words.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    let by_date = q.get("by").map(|v| v == "date").unwrap_or(false);
+    let mut words = st.db.list_words_dated(cat).await.map_err(AppError::from)?;
+    if by_date {
+        // 날짜(최신순) → 같은 날 안에서는 알파벳순.
+        words.sort_by(|a, b| {
+            fmt_date(b.4)
+                .cmp(&fmt_date(a.4))
+                .then(a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+        });
+    } else {
+        // 사전처럼 찾기 쉽게 알파벳순.
+        words.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    }
 
     let scope = cat.map_or("전체", |c| c.label());
     let mut body = format!(
-        "{}<h1>단어장 인쇄 · {scope}</h1>\
+        "{}<h1>단어장 인쇄 · {scope}{by}</h1>\
          <div class=\"toolbar noprint\">\
            <a class=\"chip\" href=\"/words{q}\">← 단어장</a>\
            <button type=\"button\" class=\"chip\" id=\"selall\">전체 선택</button>\
@@ -607,6 +622,7 @@ async fn print_words(
          </form>\
          <p class=\"noprint muted pick-hint\">체크한 단어만 인쇄·내보내기됩니다. 어근 분석은 인쇄할 때 선택한 단어만 불러옵니다.</p>",
         nav("words"),
+        by = if by_date { " · 날짜별" } else { "" },
         q = cat_query(cat),
         catkey = cat.map_or("", |c| c.as_str()),
     );
@@ -615,7 +631,20 @@ async fn print_words(
         body.push_str("<p class=\"empty\">인쇄할 단어가 없습니다.</p>");
     } else {
         body.push_str("<ul class=\"print-words\">");
-        for (c, term, def, ex) in &words {
+        let mut cur_date = String::new();
+        for (c, term, def, ex, ts) in &words {
+            // 날짜별 모드: 날짜가 바뀌면 그 날 헤더(개수 포함)를 먼저 넣는다.
+            if by_date {
+                let d = fmt_date(*ts);
+                if d != cur_date {
+                    let cnt = words.iter().filter(|w| fmt_date(w.4) == d).count();
+                    body.push_str(&format!(
+                        "<li class=\"date-sep\">📅 {date} <span class=\"muted\">({cnt}개)</span></li>",
+                        date = esc(&d),
+                    ));
+                    cur_date = d;
+                }
+            }
             body.push_str(&format!(
                 "<li class=\"card\">\
                    <div class=\"head\">\
@@ -903,6 +932,13 @@ fn fmt_time(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
         .map(|dt| (dt + chrono::Duration::hours(9)).format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_default()
+}
+
+/// created_at(ms) → KST 기준 날짜(YYYY-MM-DD). 날짜별 그룹핑/인쇄용.
+fn fmt_date(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|dt| (dt + chrono::Duration::hours(9)).format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "(날짜 없음)".to_string())
 }
 
 /// 단어 어근 분석 JSON을 반환한다. 캐시에 있으면 즉시, 없으면 Claude로 생성 후 캐시.
@@ -1529,6 +1565,9 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .print-words { list-style: none; padding: 0; margin: .5rem 0 0; columns: 2; column-gap: 1.3rem; }
 .print-words .card { break-inside: avoid; -webkit-column-break-inside: avoid; margin: 0 0 .85rem; }
 .print-words li.unsel { opacity: .4; }
+.print-words .date-sep { column-span: all; -webkit-column-span: all; list-style: none;
+  font-weight: 700; font-size: 1rem; margin: .7rem 0 .5rem; padding: .25rem .1rem;
+  border-bottom: 2px solid var(--accent); break-after: avoid; break-inside: avoid; }
 .pick { display: inline-flex; align-items: center; margin-right: .15rem; cursor: pointer; }
 .pickbox { width: 1.05rem; height: 1.05rem; cursor: pointer; accent-color: var(--accent); }
 .pick-hint { font-size: .84rem; margin: -.3rem 0 .7rem; }
@@ -1866,7 +1905,7 @@ const PRINT_JS: &str = r#"
     if(d.mnemonic) box.appendChild(el('div','mnemonic','💡 '+d.mnemonic));
     if(!box.childNodes.length) box.appendChild(el('div','muted','(분석 없음)'));
   }
-  var lis=Array.prototype.slice.call(document.querySelectorAll('.print-words li'));
+  var lis=Array.prototype.slice.call(document.querySelectorAll('.print-words li.card'));
   var prog=document.getElementById('prog'), btn=document.getElementById('printbtn');
   var selall=document.getElementById('selall'), selnone=document.getElementById('selnone');
 
