@@ -1648,6 +1648,19 @@ li.card:hover { transform: translateY(-2px); box-shadow: 0 16px 44px rgba(31,38,
 .gram { margin-top: .6rem; padding: .75rem .85rem; border-radius: 14px;
   background: rgba(255,255,255,.4); border: 1px solid var(--brd); font-size: .9rem; }
 .gram-summary { font-weight: 600; margin-bottom: .5rem; }
+/* 문법 분석 팝업(모달) */
+.gram-modal { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.45);
+  display: flex; align-items: flex-start; justify-content: center; padding: 4vh 3vw; overflow: auto; }
+.gram-modal[hidden] { display: none !important; }
+.gram-modal-box { width: min(920px, 96vw); max-height: 92vh; overflow: auto;
+  background: rgba(252,252,255,.98); border: 1px solid var(--brd); border-radius: 18px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.35); padding: 1rem 1.1rem 1.2rem; }
+.gram-modal-bar { display: flex; align-items: flex-start; gap: .8rem; margin-bottom: .7rem;
+  position: sticky; top: -.2rem; background: inherit; padding: .2rem 0; }
+.gram-modal-title { flex: 1; font-weight: 600; font-size: .96rem; line-height: 1.45; }
+.gram-modal-close { flex: 0 0 auto; cursor: pointer; font-size: 1rem; font-weight: 700; color: var(--muted);
+  background: rgba(255,255,255,.7); border: 1px solid var(--brd); border-radius: 10px; padding: .2rem .6rem; }
+.gram-modal-close:hover { background: #fff; }
 .gram-scroll { overflow-x: auto; padding-bottom: .2rem; }
 .gram-wrap { position: relative; display: inline-block; min-width: 100%; }
 .gram-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
@@ -1819,6 +1832,9 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
   .edit-toggle, .ghost { background: rgba(255,255,255,.08); }
   .edit-toggle:hover, .ghost:hover { background: rgba(255,255,255,.16); }
   .reader-edit textarea { background: rgba(255,255,255,.08); }
+  .gram-modal-box { background: rgba(24,24,38,.98); }
+  .gram-modal-close { background: rgba(255,255,255,.1); }
+  .gram-modal-close:hover { background: rgba(255,255,255,.2); }
 }
 .reader-hint { color: var(--muted); font-size: .84rem; margin: .2rem 0 .5rem; }
 .reader { max-width: 38rem; margin: 0 auto;
@@ -2584,15 +2600,38 @@ const GRAPH_RENDER_JS: &str = r#"
 /// (window.gramRender)로 그래프를 그린다. 렌더 로직 자체는 GRAPH_RENDER_JS에 있음.
 const SENTENCE_GRAPH_JS: &str = r#"
 (function(){
+  var modal, mBody, mTitle;
+  function ensureModal(){
+    if(modal) return;
+    modal=document.createElement('div'); modal.className='gram-modal'; modal.hidden=true;
+    var box=document.createElement('div'); box.className='gram-modal-box';
+    var bar=document.createElement('div'); bar.className='gram-modal-bar';
+    mTitle=document.createElement('div'); mTitle.className='gram-modal-title';
+    var close=document.createElement('button'); close.className='gram-modal-close'; close.textContent='✕';
+    close.setAttribute('aria-label','닫기'); close.onclick=hide;
+    bar.appendChild(mTitle); bar.appendChild(close);
+    mBody=document.createElement('div'); mBody.className='gram-modal-body';
+    box.appendChild(bar); box.appendChild(mBody); modal.appendChild(box);
+    modal.addEventListener('click', function(e){ if(e.target===modal) hide(); }); // 바깥 클릭 닫기
+    document.addEventListener('keydown', function(e){ if(!modal.hidden && e.key==='Escape') hide(); });
+    document.body.appendChild(modal);
+  }
+  function show(){ modal.hidden=false; document.body.style.overflow='hidden'; }
+  function hide(){ if(modal){ modal.hidden=true; document.body.style.overflow=''; } }
+
   document.querySelectorAll('.gram-btn').forEach(function(btn){
     btn.addEventListener('click', function(){
-      var card=btn.closest('.card'); var box=card.querySelector('.gram');
-      if(box.dataset.loaded){ box.hidden=!box.hidden; return; }
-      box.hidden=false; box.textContent='분석 중…'; btn.disabled=true;
-      fetch('/sentences/grammar?text='+encodeURIComponent(box.dataset.text))
+      var card=btn.closest('.card'); var holder=card.querySelector('.gram');
+      var sentence=holder ? holder.dataset.text : '';
+      ensureModal();
+      mTitle.textContent=sentence;
+      mBody.dataset.text=sentence;
+      mBody.textContent='분석 중…';
+      show(); btn.disabled=true;
+      fetch('/sentences/grammar?text='+encodeURIComponent(sentence))
         .then(function(r){ if(!r.ok) throw 0; return r.json(); })
-        .then(function(d){ window.gramRender(box,d); box.dataset.loaded='1'; })
-        .catch(function(){ box.textContent='분석을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'; })
+        .then(function(d){ window.gramRender(mBody,d); })
+        .catch(function(){ mBody.textContent='분석을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'; })
         .then(function(){ btn.disabled=false; });
     });
   });
