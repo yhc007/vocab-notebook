@@ -280,6 +280,39 @@ impl Db {
         Ok(out)
     }
 
+    /// list_sentences와 같되 출처 제목(source_detail)과 created_at까지 반환(날짜별 인쇄용).
+    /// 반환: (카테고리, text, reason, source_detail, created_at).
+    #[allow(clippy::type_complexity)]
+    pub async fn list_sentences_dated(
+        &self,
+        cat: Option<Category>,
+    ) -> Result<Vec<(Category, String, String, String, i64)>> {
+        let deleted = self.deleted_entry_ids().await?;
+        let cats: Vec<Category> = cat.map_or_else(|| Category::ALL.to_vec(), |c| vec![c]);
+        let mut out = Vec::new();
+        for c in cats {
+            let cql = format!(
+                "SELECT text, reason, source_detail, entry_id, created_at \
+                 FROM vocab.sentences WHERE category = {}",
+                cql_str(c.as_str())
+            );
+            let v = self.exec(&cql).await?;
+            for r in rows(&v) {
+                if is_deleted(r, &deleted) {
+                    continue;
+                }
+                out.push((
+                    c,
+                    text(r, "text"),
+                    text(r, "reason"),
+                    text(r, "source_detail"),
+                    ts_col(r, "created_at").unwrap_or(0),
+                ));
+            }
+        }
+        Ok(out)
+    }
+
     /// 복습 대상 단어: 아직 '안다'로 표시되지 않은(known_words에 없는) 전체 단어.
     /// CoreDB는 비-키 컬럼 필터가 제한적이라, 전체를 받아 Rust에서 걸러낸다.
     pub async fn review_words(&self) -> Result<Vec<(Category, String, String, String)>> {

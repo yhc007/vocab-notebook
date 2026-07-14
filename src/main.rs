@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/words/roots", get(word_roots))
         .route("/words/print", get(print_words))
         .route("/sentences", get(list_sentences))
+        .route("/sentences/print", get(print_sentences))
         .route("/sentences/review", get(grammar_review))
         .route("/sentences/grammar", get(sentence_grammar))
         .route("/sentences/point", get(sentence_point))
@@ -695,6 +696,105 @@ async fn print_words(
     Ok(page("단어장 인쇄", &body))
 }
 
+/// 인쇄(PDF) 전용 베스트 문장 뷰. `?by=date`면 날짜별로 묶고 날짜 선택 바를 둔다.
+/// 각 문장에 출처 기사 제목(source_detail)을 함께 출력한다.
+async fn print_sentences(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Html<String>, AppError> {
+    let cat = q.get("category").and_then(|s| Category::parse(s));
+    let by_date = q.get("by").map(|v| v == "date").unwrap_or(false);
+    let mut sents = st.db.list_sentences_dated(cat).await.map_err(AppError::from)?;
+    // 최신순(같은 날짜가 자연히 묶인다).
+    sents.sort_by(|a, b| b.4.cmp(&a.4));
+
+    let scope = cat.map_or("전체", |c| c.label());
+    let mut body = format!(
+        "{}<h1>베스트 문장 인쇄 · {scope}{by}</h1>\
+         <div class=\"toolbar noprint\">\
+           <a class=\"chip\" href=\"/sentences{q}\">← 문장</a>\
+           <button type=\"button\" class=\"chip\" id=\"selall\">전체 선택</button>\
+           <button type=\"button\" class=\"chip\" id=\"selnone\">전체 해제</button>\
+           <span id=\"prog\"></span>\
+           <button id=\"printbtn\">🖨 선택 문장 인쇄</button>\
+         </div>\
+         <p class=\"noprint muted pick-hint\">체크한 문장만 인쇄됩니다. 각 문장에 출처 기사 제목이 함께 출력됩니다.</p>",
+        nav("sentences"),
+        by = if by_date { " · 날짜별" } else { "" },
+        q = cat_query(cat),
+    );
+
+    if sents.is_empty() {
+        body.push_str("<p class=\"empty\">인쇄할 문장이 없습니다.</p>");
+    } else {
+        // 날짜별: 상단에 날짜 선택 바(고유 날짜 + 개수). 체크한 날짜만 인쇄된다.
+        if by_date {
+            let mut dates: Vec<(String, usize)> = Vec::new();
+            for s in &sents {
+                let d = fmt_date(s.4);
+                match dates.last_mut() {
+                    Some((ld, cnt)) if *ld == d => *cnt += 1,
+                    _ => dates.push((d, 1)),
+                }
+            }
+            body.push_str("<div class=\"datebar noprint\"><span class=\"muted\">날짜 선택:</span>");
+            for (d, cnt) in &dates {
+                body.push_str(&format!(
+                    "<label class=\"datechip\"><input type=\"checkbox\" class=\"datebox\" data-date=\"{d}\" checked> 📅 {d} <span class=\"muted\">({cnt})</span></label>",
+                    d = esc(d),
+                ));
+            }
+            body.push_str("</div>");
+        }
+
+        body.push_str("<ul class=\"print-sents\">");
+        let mut cur_date = String::new();
+        for (c, textv, reason, title, ts) in &sents {
+            let d = fmt_date(*ts);
+            if by_date && d != cur_date {
+                let cnt = sents.iter().filter(|s| fmt_date(s.4) == d).count();
+                body.push_str(&format!(
+                    "<li class=\"date-sep\" data-date=\"{d}\">📅 {d} <span class=\"muted\">({cnt}개)</span></li>",
+                    d = esc(&d),
+                ));
+                cur_date = d.clone();
+            }
+            let datelbl = if by_date {
+                format!("<span class=\"wdate\">🗓 {}</span>", esc(&d))
+            } else {
+                String::new()
+            };
+            let dateattr = if by_date {
+                format!(" data-date=\"{}\"", esc(&d))
+            } else {
+                String::new()
+            };
+            // 출처 기사 제목(있을 때만).
+            let src = if title.trim().is_empty() {
+                String::new()
+            } else {
+                format!("<div class=\"src\">📄 {}</div>", esc(title))
+            };
+            body.push_str(&format!(
+                "<li class=\"card\"{dateattr}>\
+                   <div class=\"head\">\
+                     <label class=\"pick noprint\"><input type=\"checkbox\" class=\"pickbox\" checked></label>\
+                     <span class=\"badge\">{cat}</span>{datelbl}</div>\
+                   {src}\
+                   <blockquote class=\"sentence\">{textv}</blockquote>\
+                   <div class=\"reason\">💡 {reason}</div>\
+                 </li>",
+                cat = esc(c.label()),
+                textv = esc(textv),
+                reason = esc(reason),
+            ));
+        }
+        body.push_str("</ul>");
+        body.push_str(&format!("<script>{SENT_PRINT_JS}</script>"));
+    }
+    Ok(page("베스트 문장 인쇄", &body))
+}
+
 async fn list_sentences(
     State(st): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
@@ -709,8 +809,14 @@ async fn list_sentences(
     );
     body.push_str(&format!(
         "<div class=\"export\">내보내기 · <a href=\"/export/sentences.csv{q}\">CSV</a> · \
+         <a href=\"/sentences/print{q}\">🖨 PDF 인쇄</a> · \
+         <a href=\"/sentences/print{qd}\">📅 날짜별 인쇄</a> · \
          <a href=\"/sentences/review\">🎴 문법 카드로 복습</a></div>",
         q = cat_query(cat),
+        qd = match cat {
+            Some(c) => format!("?category={}&by=date", c.as_str()),
+            None => "?by=date".to_string(),
+        },
     ));
     if sentences.is_empty() {
         body.push_str("<p class=\"empty\">아직 문장이 없습니다. <a href=\"/\">본문을 붙여넣어</a> 추출해 보세요.</p>");
@@ -1602,13 +1708,19 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
   background: rgba(255,255,255,.4); border: 1px solid var(--brd); border-radius: 12px; }
 .datechip { display: inline-flex; align-items: center; gap: .3rem; font-size: .84rem; font-weight: 600;
   background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 999px; padding: .2rem .7rem; cursor: pointer; }
+.print-sents { list-style: none; padding: 0; margin: .5rem 0 0; }
+.print-sents .card { break-inside: avoid; margin: 0 0 .9rem; }
+.print-sents li.unsel { opacity: .4; }
+.print-sents .date-sep { list-style: none; font-weight: 700; font-size: 1rem; margin: .7rem 0 .5rem;
+  padding: .25rem .1rem; border-bottom: 2px solid var(--accent); break-after: avoid; break-inside: avoid; }
+.src { color: var(--muted); font-size: .82rem; font-weight: 600; margin: .1rem 0 .35rem; }
 .pick { display: inline-flex; align-items: center; margin-right: .15rem; cursor: pointer; }
 .pickbox { width: 1.05rem; height: 1.05rem; cursor: pointer; accent-color: var(--accent); }
 .pick-hint { font-size: .84rem; margin: -.3rem 0 .7rem; }
 
 @media print {
   nav, .toolbar, .noprint, .filter, .export { display: none !important; }
-  .print-words li.unsel { display: none !important; }
+  .print-words li.unsel, .print-sents li.unsel { display: none !important; }
   html, body { background: #fff !important; color: #000 !important; }
   body::before { display: none !important; }
   .wrap { max-width: none; margin: 0; padding: 0; }
@@ -2036,6 +2148,32 @@ const PRINT_JS: &str = r#"
   if(ec) ec.addEventListener('click', function(){ exportTo('/export/words.csv'); });
   if(ea) ea.addEventListener('click', function(){ exportTo('/export/words.tsv'); });
 
+  updateCount(); syncDates();
+})();
+"#;
+
+/// 베스트 문장 인쇄: 문장 개별 선택 + 날짜 체크박스(그 날짜 문장 일괄 토글, 빈 날짜 헤더
+/// 자동 숨김) + 인쇄. 어근/CSV 없이 PRINT_JS의 선택·날짜 로직만 담은 경량 버전.
+const SENT_PRINT_JS: &str = r#"
+(function(){
+  var lis=Array.prototype.slice.call(document.querySelectorAll('.print-sents li.card'));
+  var prog=document.getElementById('prog'), btn=document.getElementById('printbtn');
+  var selall=document.getElementById('selall'), selnone=document.getElementById('selnone');
+  var dateboxes=Array.prototype.slice.call(document.querySelectorAll('.datebox'));
+  var seps=Array.prototype.slice.call(document.querySelectorAll('.print-sents .date-sep'));
+  function cardsOfDate(d){ return lis.filter(function(li){ return li.dataset.date===d; }); }
+  function selectedLis(){ return lis.filter(function(li){ return !li.classList.contains('unsel'); }); }
+  function updateCount(){ if(prog) prog.textContent = selectedLis().length+' / '+lis.length+' 선택'; }
+  function syncDates(){
+    seps.forEach(function(h){ var any=cardsOfDate(h.dataset.date).some(function(li){ return !li.classList.contains('unsel'); }); h.classList.toggle('unsel', !any); });
+    dateboxes.forEach(function(cb){ var any=cardsOfDate(cb.dataset.date).some(function(li){ return !li.classList.contains('unsel'); }); cb.checked=any; });
+  }
+  lis.forEach(function(li){ var cb=li.querySelector('.pickbox'); if(!cb) return; cb.addEventListener('change', function(){ li.classList.toggle('unsel', !cb.checked); updateCount(); syncDates(); }); });
+  function setAll(on){ lis.forEach(function(li){ var cb=li.querySelector('.pickbox'); if(cb) cb.checked=on; li.classList.toggle('unsel', !on); }); updateCount(); syncDates(); }
+  if(selall) selall.addEventListener('click', function(){ setAll(true); });
+  if(selnone) selnone.addEventListener('click', function(){ setAll(false); });
+  dateboxes.forEach(function(cb){ cb.addEventListener('change', function(){ cardsOfDate(cb.dataset.date).forEach(function(li){ var pb=li.querySelector('.pickbox'); if(pb) pb.checked=cb.checked; li.classList.toggle('unsel', !cb.checked); }); updateCount(); syncDates(); }); });
+  if(btn) btn.addEventListener('click', function(){ if(selectedLis().length===0){ alert('선택된 문장이 없습니다.'); return; } setTimeout(function(){ window.print(); }, 30); });
   updateCount(); syncDates();
 })();
 "#;
