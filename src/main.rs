@@ -630,29 +630,52 @@ async fn print_words(
     if words.is_empty() {
         body.push_str("<p class=\"empty\">인쇄할 단어가 없습니다.</p>");
     } else {
+        // 날짜별 모드: 상단에 날짜 선택 바(고유 날짜 + 개수). 체크한 날짜만 인쇄된다.
+        if by_date {
+            let mut dates: Vec<(String, usize)> = Vec::new();
+            for w in &words {
+                let d = fmt_date(w.4);
+                match dates.last_mut() {
+                    Some((ld, cnt)) if *ld == d => *cnt += 1,
+                    _ => dates.push((d, 1)),
+                }
+            }
+            body.push_str("<div class=\"datebar noprint\"><span class=\"muted\">날짜 선택:</span>");
+            for (d, cnt) in &dates {
+                body.push_str(&format!(
+                    "<label class=\"datechip\"><input type=\"checkbox\" class=\"datebox\" data-date=\"{d}\" checked> 📅 {d} <span class=\"muted\">({cnt})</span></label>",
+                    d = esc(d),
+                ));
+            }
+            body.push_str("</div>");
+        }
+
         body.push_str("<ul class=\"print-words\">");
         let mut cur_date = String::new();
         for (c, term, def, ex, ts) in &words {
+            let d = fmt_date(*ts);
             // 날짜별 모드: 날짜가 바뀌면 그 날 헤더(개수 포함)를 먼저 넣는다.
-            if by_date {
-                let d = fmt_date(*ts);
-                if d != cur_date {
-                    let cnt = words.iter().filter(|w| fmt_date(w.4) == d).count();
-                    body.push_str(&format!(
-                        "<li class=\"date-sep\">📅 {date} <span class=\"muted\">({cnt}개)</span></li>",
-                        date = esc(&d),
-                    ));
-                    cur_date = d;
-                }
+            if by_date && d != cur_date {
+                let cnt = words.iter().filter(|w| fmt_date(w.4) == d).count();
+                body.push_str(&format!(
+                    "<li class=\"date-sep\" data-date=\"{d}\">📅 {d} <span class=\"muted\">({cnt}개)</span></li>",
+                    d = esc(&d),
+                ));
+                cur_date = d.clone();
             }
-            // 날짜별 모드에서는 각 단어에도 추가된 날짜를 붙인다(인쇄물에 표시).
+            // 날짜별 모드에서는 각 단어에도 추가된 날짜를 붙이고(인쇄 표시), data-date로 묶는다.
             let datelbl = if by_date {
-                format!("<span class=\"wdate\">🗓 {}</span>", esc(&fmt_date(*ts)))
+                format!("<span class=\"wdate\">🗓 {}</span>", esc(&d))
+            } else {
+                String::new()
+            };
+            let dateattr = if by_date {
+                format!(" data-date=\"{}\"", esc(&d))
             } else {
                 String::new()
             };
             body.push_str(&format!(
-                "<li class=\"card\">\
+                "<li class=\"card\"{dateattr}>\
                    <div class=\"head\">\
                      <label class=\"pick noprint\"><input type=\"checkbox\" class=\"pickbox\" checked></label>\
                      <span class=\"badge\">{cat}</span><b class=\"term\">{term}</b>{datelbl}</div>\
@@ -1575,6 +1598,10 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
   font-weight: 700; font-size: 1rem; margin: .7rem 0 .5rem; padding: .25rem .1rem;
   border-bottom: 2px solid var(--accent); break-after: avoid; break-inside: avoid; }
 .wdate { color: var(--muted); font-size: .76rem; font-weight: 600; margin-left: .5rem; white-space: nowrap; }
+.datebar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 0 0 1rem; padding: .5rem .6rem;
+  background: rgba(255,255,255,.4); border: 1px solid var(--brd); border-radius: 12px; }
+.datechip { display: inline-flex; align-items: center; gap: .3rem; font-size: .84rem; font-weight: 600;
+  background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 999px; padding: .2rem .7rem; cursor: pointer; }
 .pick { display: inline-flex; align-items: center; margin-right: .15rem; cursor: pointer; }
 .pickbox { width: 1.05rem; height: 1.05rem; cursor: pointer; accent-color: var(--accent); }
 .pick-hint { font-size: .84rem; margin: -.3rem 0 .7rem; }
@@ -1916,20 +1943,48 @@ const PRINT_JS: &str = r#"
   var prog=document.getElementById('prog'), btn=document.getElementById('printbtn');
   var selall=document.getElementById('selall'), selnone=document.getElementById('selnone');
 
+  var dateboxes=Array.prototype.slice.call(document.querySelectorAll('.datebox'));
+  var seps=Array.prototype.slice.call(document.querySelectorAll('.print-words .date-sep'));
+  function cardsOfDate(d){ return lis.filter(function(li){ return li.dataset.date===d; }); }
+
   function selectedLis(){ return lis.filter(function(li){ return !li.classList.contains('unsel'); }); }
   function updateCount(){ if(prog) prog.textContent = selectedLis().length+' / '+lis.length+' 선택'; }
+
+  // 날짜 헤더/체크박스 상태를 단어 선택 상태에 맞춰 갱신. 그 날 선택 단어가 0이면
+  // 헤더도 숨겨(unsel) 빈 날짜가 인쇄되지 않게 한다.
+  function syncDates(){
+    seps.forEach(function(h){
+      var any=cardsOfDate(h.dataset.date).some(function(li){ return !li.classList.contains('unsel'); });
+      h.classList.toggle('unsel', !any);
+    });
+    dateboxes.forEach(function(cb){
+      var any=cardsOfDate(cb.dataset.date).some(function(li){ return !li.classList.contains('unsel'); });
+      cb.checked=any;
+    });
+  }
 
   // 체크박스 ↔ li.unsel 동기화
   lis.forEach(function(li){
     var cb=li.querySelector('.pickbox'); if(!cb) return;
-    cb.addEventListener('change', function(){ li.classList.toggle('unsel', !cb.checked); updateCount(); });
+    cb.addEventListener('change', function(){ li.classList.toggle('unsel', !cb.checked); updateCount(); syncDates(); });
   });
   function setAll(on){
     lis.forEach(function(li){ var cb=li.querySelector('.pickbox'); if(cb) cb.checked=on; li.classList.toggle('unsel', !on); });
-    updateCount();
+    updateCount(); syncDates();
   }
   if(selall) selall.addEventListener('click', function(){ setAll(true); });
   if(selnone) selnone.addEventListener('click', function(){ setAll(false); });
+
+  // 날짜 체크박스: 그 날짜의 단어 전체를 켜고/끄고, 헤더 표시도 갱신.
+  dateboxes.forEach(function(cb){
+    cb.addEventListener('change', function(){
+      cardsOfDate(cb.dataset.date).forEach(function(li){
+        var pb=li.querySelector('.pickbox'); if(pb) pb.checked=cb.checked;
+        li.classList.toggle('unsel', !cb.checked);
+      });
+      updateCount(); syncDates();
+    });
+  });
 
   // 선택된 단어 중 아직 어근을 안 불러온 것만 로드(동시성 제한) 후 콜백.
   function loadRoots(boxes, cb){
@@ -1981,7 +2036,7 @@ const PRINT_JS: &str = r#"
   if(ec) ec.addEventListener('click', function(){ exportTo('/export/words.csv'); });
   if(ea) ea.addEventListener('click', function(){ exportTo('/export/words.tsv'); });
 
-  updateCount();
+  updateCount(); syncDates();
 })();
 "#;
 
