@@ -705,8 +705,18 @@ async fn print_sentences(
     let cat = q.get("category").and_then(|s| Category::parse(s));
     let by_date = q.get("by").map(|v| v == "date").unwrap_or(false);
     let mut sents = st.db.list_sentences_dated(cat).await.map_err(AppError::from)?;
-    // 최신순(같은 날짜가 자연히 묶인다).
-    sents.sort_by(|a, b| b.4.cmp(&a.4));
+    if by_date {
+        // 날짜(최신순) → 같은 날 안에서는 기사 제목별 → 그 안에서는 최신순.
+        sents.sort_by(|a, b| {
+            fmt_date(b.4)
+                .cmp(&fmt_date(a.4))
+                .then(a.3.cmp(&b.3))
+                .then(b.4.cmp(&a.4))
+        });
+    } else {
+        // 최신순.
+        sents.sort_by(|a, b| b.4.cmp(&a.4));
+    }
 
     let scope = cat.map_or("전체", |c| c.label());
     let mut body = format!(
@@ -749,6 +759,7 @@ async fn print_sentences(
 
         body.push_str("<ul class=\"print-sents\">");
         let mut cur_date = String::new();
+        let mut cur_src = String::new();
         for (c, textv, reason, title, ts) in &sents {
             let d = fmt_date(*ts);
             if by_date && d != cur_date {
@@ -758,6 +769,25 @@ async fn print_sentences(
                     d = esc(&d),
                 ));
                 cur_date = d.clone();
+                cur_src = String::new(); // 새 날짜 → 제목 그룹 초기화
+            }
+            // 날짜별: 같은 날 안에서 기사 제목이 바뀌면 제목 소제목(개수 포함).
+            if by_date && *title != cur_src {
+                let tcnt = sents
+                    .iter()
+                    .filter(|s| fmt_date(s.4) == d && &s.3 == title)
+                    .count();
+                let tlabel = if title.trim().is_empty() {
+                    "(제목 없음)".to_string()
+                } else {
+                    esc(title)
+                };
+                body.push_str(&format!(
+                    "<li class=\"src-sep\" data-date=\"{d}\" data-src=\"{srck}\">📄 {tlabel} <span class=\"muted\">({tcnt}개)</span></li>",
+                    d = esc(&d),
+                    srck = esc(title),
+                ));
+                cur_src = title.clone();
             }
             let datelbl = if by_date {
                 format!("<span class=\"wdate\">🗓 {}</span>", esc(&d))
@@ -765,15 +795,16 @@ async fn print_sentences(
                 String::new()
             };
             let dateattr = if by_date {
-                format!(" data-date=\"{}\"", esc(&d))
+                format!(" data-date=\"{}\" data-src=\"{}\"", esc(&d), esc(title))
             } else {
                 String::new()
             };
-            // 출처 기사 제목(있을 때만).
-            let src = if title.trim().is_empty() {
-                String::new()
-            } else {
+            // 날짜별 모드에서는 제목이 소제목으로 묶이므로 카드별 제목은 생략(중복 방지).
+            // 일반 인쇄에서는 각 문장에 제목을 붙인다.
+            let src = if !by_date && !title.trim().is_empty() {
                 format!("<div class=\"src\">📄 {}</div>", esc(title))
+            } else {
+                String::new()
             };
             body.push_str(&format!(
                 "<li class=\"card\"{dateattr}>\
@@ -1714,6 +1745,8 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .print-sents .date-sep { list-style: none; font-weight: 700; font-size: 1rem; margin: .7rem 0 .5rem;
   padding: .25rem .1rem; border-bottom: 2px solid var(--accent); break-after: avoid; break-inside: avoid; }
 .src { color: var(--muted); font-size: .82rem; font-weight: 600; margin: .1rem 0 .35rem; }
+.print-sents .src-sep { list-style: none; font-weight: 700; font-size: .92rem; color: var(--accent);
+  margin: .45rem 0 .3rem .2rem; padding: .1rem 0; break-after: avoid; break-inside: avoid; }
 .pick { display: inline-flex; align-items: center; margin-right: .15rem; cursor: pointer; }
 .pickbox { width: 1.05rem; height: 1.05rem; cursor: pointer; accent-color: var(--accent); }
 .pick-hint { font-size: .84rem; margin: -.3rem 0 .7rem; }
@@ -2161,12 +2194,19 @@ const SENT_PRINT_JS: &str = r#"
   var selall=document.getElementById('selall'), selnone=document.getElementById('selnone');
   var dateboxes=Array.prototype.slice.call(document.querySelectorAll('.datebox'));
   var seps=Array.prototype.slice.call(document.querySelectorAll('.print-sents .date-sep'));
+  var srcSeps=Array.prototype.slice.call(document.querySelectorAll('.print-sents .src-sep'));
+  function sel(li){ return !li.classList.contains('unsel'); }
   function cardsOfDate(d){ return lis.filter(function(li){ return li.dataset.date===d; }); }
-  function selectedLis(){ return lis.filter(function(li){ return !li.classList.contains('unsel'); }); }
+  function selectedLis(){ return lis.filter(sel); }
   function updateCount(){ if(prog) prog.textContent = selectedLis().length+' / '+lis.length+' 선택'; }
   function syncDates(){
-    seps.forEach(function(h){ var any=cardsOfDate(h.dataset.date).some(function(li){ return !li.classList.contains('unsel'); }); h.classList.toggle('unsel', !any); });
-    dateboxes.forEach(function(cb){ var any=cardsOfDate(cb.dataset.date).some(function(li){ return !li.classList.contains('unsel'); }); cb.checked=any; });
+    seps.forEach(function(h){ h.classList.toggle('unsel', !cardsOfDate(h.dataset.date).some(sel)); });
+    // 제목 소제목: 같은 날짜+제목 그룹에 선택된 문장이 없으면 숨김.
+    srcSeps.forEach(function(h){
+      var any=lis.some(function(li){ return li.dataset.date===h.dataset.date && li.dataset.src===h.dataset.src && sel(li); });
+      h.classList.toggle('unsel', !any);
+    });
+    dateboxes.forEach(function(cb){ cb.checked=cardsOfDate(cb.dataset.date).some(sel); });
   }
   lis.forEach(function(li){ var cb=li.querySelector('.pickbox'); if(!cb) return; cb.addEventListener('change', function(){ li.classList.toggle('unsel', !cb.checked); updateCount(); syncDates(); }); });
   function setAll(on){ lis.forEach(function(li){ var cb=li.querySelector('.pickbox'); if(cb) cb.checked=on; li.classList.toggle('unsel', !on); }); updateCount(); syncDates(); }
