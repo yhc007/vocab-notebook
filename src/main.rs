@@ -3,6 +3,7 @@ mod db;
 mod extract;
 mod fetch;
 mod models;
+mod tts;
 
 use axum::{
     extract::{DefaultBodyLimit, FromRef, Multipart, Path, Query, State},
@@ -27,6 +28,8 @@ struct AppState {
     db: Db,
     extractor: Arc<Extractor>,
     oauth: Arc<OAuthConfig>,
+    /// ElevenLabs TTS(설정됐을 때만). 없으면 읽어주기 버튼 미노출.
+    tts: Option<Arc<tts::Tts>>,
     /// 세션 쿠키 암호화 키 (PrivateCookieJar용).
     key: Key,
 }
@@ -57,11 +60,16 @@ async fn main() -> anyhow::Result<()> {
     let db = Db::connect(&node).await?;
     let extractor = Arc::new(Extractor::new(api_key, model));
     let oauth = OAuthConfig::from_env();
+    let tts = tts::Tts::from_env().map(Arc::new);
+    if tts.is_some() {
+        tracing::info!("ElevenLabs TTS 활성화(기사 읽어주기)");
+    }
     let key = auth::cookie_key();
     let state = AppState {
         db,
         extractor,
         oauth,
+        tts,
         key,
     };
 
@@ -71,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/entries", get(list_entries_page).post(create_entry))
         .route("/entries/:id", get(entry_detail))
         .route("/entries/:id/print", get(print_entry))
+        .route("/entries/:id/tts", get(entry_tts))
         .route("/entries/:id/mindmap", get(entry_mindmap))
         .route("/entries/:id/summary", get(entry_summary))
         .route("/entries/:id/append", post(append_entry))
@@ -316,10 +325,26 @@ async fn entry_detail(
     // 원문(리더 뷰 + 어휘 하이라이트).
     // 이 기사의 단어를 소문자 변형 → 뜻 맵으로 만들어 본문 속 등장 위치에 밑줄/뜻을 붙인다.
     let vocab = build_vocab(&words);
-    body.push_str(
-        "<div class=\"reader-head\"><h2>📖 기사 읽기</h2>\
-         <button type=\"button\" id=\"editbtn\" class=\"edit-toggle\">✏️ 편집</button></div>",
-    );
+    let tts_ctrl = if st.tts.is_some() {
+        format!(
+            "<button type=\"button\" id=\"ttsbtn\" class=\"edit-toggle\" data-entry=\"{id}\">🔊 읽어주기</button>\
+             <select id=\"ttsrate\" class=\"edit-toggle\" title=\"재생 속도\">\
+               <option value=\"0.75\">0.75×</option><option value=\"1\" selected>1.0×</option>\
+               <option value=\"1.25\">1.25×</option><option value=\"1.5\">1.5×</option>\
+             </select>"
+        )
+    } else {
+        String::new()
+    };
+    body.push_str(&format!(
+        "<div class=\"reader-head\"><h2>📖 기사 읽기</h2>{tts_ctrl}\
+         <button type=\"button\" id=\"editbtn\" class=\"edit-toggle\">✏️ 편집</button></div>"
+    ));
+    if st.tts.is_some() {
+        body.push_str(
+            "<audio id=\"ttsaudio\" class=\"tts-audio noprint\" controls hidden preload=\"none\"></audio>",
+        );
+    }
     if !vocab.is_empty() {
         body.push_str(
             "<div class=\"reader-hint\">밑줄 친 단어에 마우스를 올리면 뜻이 보여요.</div>",
@@ -401,6 +426,9 @@ async fn entry_detail(
     body.push_str(&format!("<script>{MINDMAP_JS}</script>"));
     body.push_str(&format!("<script>{SUMMARY_JS}</script>"));
     body.push_str(&format!("<script>{READER_EDIT_JS}</script>"));
+    if st.tts.is_some() {
+        body.push_str(&format!("<script>{TTS_JS}</script>"));
+    }
     Ok(page("기사", &body))
 }
 
@@ -1205,6 +1233,72 @@ async fn sentence_point(
     Ok(json_response(body))
 }
 
+/// TTS 크레딧 보호용 본문 상한(글자). 넘으면 앞부분만 읽는다.
+const MAX_TTS_CHARS: usize = 8000;
+
+/// FNV-1a 64bit(캐시 파일명용). 본문이 바뀌면 해시도 바뀌어 자동으로 새로 생성된다.
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// 기사 본문을 ElevenLabs로 읽어 mp3로 반환. 같은 (기사·음성·모델·본문) 조합은 디스크에
+/// 캐시해 재생 시 재과금하지 않는다. 크레딧 보호로 본문은 MAX_TTS_CHARS까지만 읽는다.
+async fn entry_tts(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let tts = st
+        .tts
+        .clone()
+        .ok_or_else(|| AppError("TTS가 설정되지 않았습니다(ELEVENLABS_API_KEY).".into()))?;
+    let e = st
+        .db
+        .get_entry(id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError("기사를 찾을 수 없습니다".into()))?;
+
+    let full = e.raw_text.trim();
+    // 상한 넘으면 앞부분만(문자 경계로).
+    let text: String = if full.chars().count() > MAX_TTS_CHARS {
+        full.chars().take(MAX_TTS_CHARS).collect()
+    } else {
+        full.to_string()
+    };
+    if text.is_empty() {
+        return Err(AppError("읽을 본문이 없습니다".into()));
+    }
+
+    // 디스크 캐시: <dir>/<id>-<voice-model>-<본문해시>.mp3
+    let dir = std::env::var("TTS_CACHE_DIR").unwrap_or_else(|_| "tts-cache".into());
+    let fname = format!("{}-{}-{:016x}.mp3", id, tts.cache_tag(), fnv1a(&text));
+    let path = std::path::Path::new(&dir).join(fname);
+
+    let audio = if let Ok(bytes) = tokio::fs::read(&path).await {
+        bytes
+    } else {
+        let bytes = tts.synthesize(&text).await.map_err(AppError::from)?;
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        if let Err(e) = tokio::fs::write(&path, &bytes).await {
+            tracing::warn!("TTS 캐시 저장 실패(무시): {e}");
+        }
+        bytes
+    };
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "audio/mpeg"),
+            (header::CACHE_CONTROL, "private, max-age=86400"),
+        ],
+        audio,
+    ))
+}
+
 /// 기사 구조 마인드맵 JSON을 반환한다. 캐시에 있으면 즉시, 없으면 Claude로 생성 후 캐시.
 async fn entry_mindmap(
     State(st): State<AppState>,
@@ -1816,8 +1910,10 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 /* 기사 원문 — 읽기 리더 뷰 */
 .article { border-radius: 18px; padding: 1.4rem 1.5rem; margin: .8rem 0; }
 /* 리더 헤더(제목 + 편집 버튼) & 본문 편집 폼 */
-.reader-head { display: flex; align-items: center; gap: .8rem; }
+.reader-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .reader-head h2 { margin-right: auto; }
+.tts-audio { width: 100%; margin: .35rem 0 .8rem; }
+#ttsrate.edit-toggle { padding: .3rem .5rem; cursor: pointer; }
 .edit-toggle, .ghost { cursor: pointer; font-weight: 600; font-size: .85rem; color: var(--accent);
   background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 10px; padding: .35rem .8rem; }
 .edit-toggle:hover, .ghost:hover { background: #fff; }
@@ -2791,6 +2887,30 @@ const READER_EDIT_JS: &str = r#"
   }
   btn.addEventListener('click',function(){ show(true); });
   if(cancel) cancel.addEventListener('click',function(){ show(false); });
+})();
+"#;
+
+/// 기사 읽어주기(ElevenLabs): 버튼 클릭 → /entries/:id/tts(mp3)를 오디오로 재생.
+/// 첫 클릭은 생성(느릴 수 있음), 이후엔 재생/일시정지 토글. 속도(select)는 즉시 반영.
+const TTS_JS: &str = r#"
+(function(){
+  var btn=document.getElementById('ttsbtn'); if(!btn) return;
+  var audio=document.getElementById('ttsaudio');
+  var rate=document.getElementById('ttsrate');
+  var entry=btn.dataset.entry, loaded=false;
+  function applyRate(){ if(rate) audio.playbackRate=parseFloat(rate.value)||1; }
+  btn.addEventListener('click', function(){
+    if(!loaded){
+      btn.disabled=true; btn.textContent='🔊 생성 중…';
+      audio.hidden=false; audio.src='/entries/'+entry+'/tts';
+      audio.play().catch(function(){});
+      audio.addEventListener('canplay', function(){ loaded=true; btn.disabled=false; btn.textContent='🔊 다시 듣기'; applyRate(); }, {once:true});
+      audio.addEventListener('error', function(){ btn.disabled=false; btn.textContent='🔊 읽어주기'; audio.hidden=true; alert('오디오를 만들지 못했어요. (키·크레딧을 확인하세요)'); }, {once:true});
+    } else {
+      if(audio.paused) audio.play(); else audio.pause();
+    }
+  });
+  if(rate) rate.addEventListener('change', applyRate);
 })();
 "#;
 
