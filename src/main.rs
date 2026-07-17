@@ -340,13 +340,13 @@ async fn entry_detail(
     body.push_str(&format!(
         "<div class=\"reader-head\"><h2>📖 기사 읽기</h2>{tts_ctrl}\
          <button type=\"button\" id=\"chunkbtn\" class=\"edit-toggle\" data-entry=\"{id}\" title=\"의미 단위(구)로 끊어 계단식으로 보기\">🧩 청크 리딩</button>\
-         <select id=\"toeic\" class=\"edit-toggle\" title=\"토익 점수대 = 읽기 속도(WPM)\">\
-           <option value=\"100\">TOEIC ~400 · 100 WPM</option>\
-           <option value=\"130\">TOEIC 500 · 130 WPM</option>\
-           <option value=\"150\" selected>TOEIC 600 · 150 WPM</option>\
-           <option value=\"170\">TOEIC 700 · 170 WPM</option>\
-           <option value=\"190\">TOEIC 800 · 190 WPM</option>\
-           <option value=\"220\">TOEIC 900+ · 220 WPM</option>\
+         <select id=\"toeic\" class=\"edit-toggle\" title=\"토익 점수대(CEFR) = 읽기 속도(WPM). 연구 규준 기반\">\
+           <option value=\"95\">TOEIC ~224 (A1) · 95 WPM</option>\
+           <option value=\"115\">TOEIC 225–549 (A2) · 115 WPM</option>\
+           <option value=\"140\" selected>TOEIC 550–784 (B1) · 140 WPM</option>\
+           <option value=\"170\">TOEIC 785–944 (B2) · 170 WPM</option>\
+           <option value=\"200\">TOEIC 945+ (C1) · 200 WPM</option>\
+           <option value=\"240\">원어민 수준 · 240 WPM</option>\
          </select>\
          <button type=\"button\" id=\"pacebtn\" class=\"edit-toggle\" title=\"선택 속도로 하이라이트만 진행(음성 없음)\">🏃 속도 읽기</button>\
          <button type=\"button\" id=\"editbtn\" class=\"edit-toggle\">✏️ 편집</button></div>"
@@ -3061,7 +3061,7 @@ const READER_JS: &str = r#"
   }
 
   // ---- 속도 읽기: 토익 점수대 WPM으로 하이라이트만 진행(음성 없음) ----
-  function curWpm(){ return (toeicSel && parseInt(toeicSel.value,10)) || 150; }
+  function curWpm(){ return (toeicSel && parseInt(toeicSel.value,10)) || 140; }
   function stopPace(){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; if(pacebtn) pacebtn.textContent='🏃 속도 읽기'; }
   // 일반 모드용: 원문을 문장 span으로 렌더(어휘 밑줄 포함).
   function renderTextSentences(){
