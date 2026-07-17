@@ -338,19 +338,22 @@ async fn entry_detail(
     };
     body.push_str(&format!(
         "<div class=\"reader-head\"><h2>📖 기사 읽기</h2>{tts_ctrl}\
+         <button type=\"button\" id=\"chunkbtn\" class=\"edit-toggle\" title=\"의미 단위(구)로 끊어 계단식으로 보기\">🧩 청크 리딩</button>\
          <button type=\"button\" id=\"editbtn\" class=\"edit-toggle\">✏️ 편집</button></div>"
     ));
-    if st.tts.is_some() {
-        body.push_str(
-            "<audio id=\"ttsaudio\" class=\"tts-audio noprint\" controls hidden preload=\"none\"></audio>",
-        );
-        // read-along 문장 안에서도 어휘 밑줄을 다시 그리도록 vocab 맵(소문자 변형 키→뜻)을 실어보낸다.
+    // 청크 리딩/read-along에서 어휘 밑줄을 다시 그리도록 vocab 맵(소문자 변형 키→뜻)을 실어보낸다.
+    if !vocab.is_empty() {
         let vjson = serde_json::to_string(&vocab)
             .unwrap_or_else(|_| "{}".into())
             .replace('<', "\\u003c");
         body.push_str(&format!(
-            "<script id=\"tts-vocab\" type=\"application/json\">{vjson}</script>"
+            "<script id=\"reader-vocab\" type=\"application/json\">{vjson}</script>"
         ));
+    }
+    if st.tts.is_some() {
+        body.push_str(
+            "<audio id=\"ttsaudio\" class=\"tts-audio noprint\" controls hidden preload=\"none\"></audio>",
+        );
     }
     if !vocab.is_empty() {
         body.push_str(
@@ -433,6 +436,7 @@ async fn entry_detail(
     body.push_str(&format!("<script>{MINDMAP_JS}</script>"));
     body.push_str(&format!("<script>{SUMMARY_JS}</script>"));
     body.push_str(&format!("<script>{READER_EDIT_JS}</script>"));
+    body.push_str(&format!("<script>{CHUNK_JS}</script>"));
     if st.tts.is_some() {
         body.push_str(&format!("<script>{TTS_JS}</script>"));
     }
@@ -1922,6 +1926,11 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .tts-audio { width: 100%; margin: .35rem 0 .8rem; }
 #ttsrate.edit-toggle { padding: .3rem .5rem; cursor: pointer; }
 .tts-readalong { white-space: pre-wrap; }
+/* 청크 리딩(VSTF 계단식) */
+.chunk-para { margin: 0 0 1.1rem; }
+.chunk-line { padding: .06rem 0; }
+.chunk-sub { margin-left: 1.7rem; }
+.fn-word { opacity: .42; }
 .tts-sent { border-radius: 5px; transition: background .12s; }
 .tts-on { background: rgba(10,132,255,.16); box-shadow: 0 0 0 3px rgba(10,132,255,.16); }
 @media (prefers-color-scheme: dark) { .tts-on { background: rgba(100,180,255,.22); box-shadow: 0 0 0 3px rgba(100,180,255,.22); } }
@@ -2901,6 +2910,60 @@ const READER_EDIT_JS: &str = r#"
 })();
 "#;
 
+/// 청크 리딩(VSTF): 기사를 의미 단위(구/절)로 끊어 계단식으로 배치하고, 기능어를 흐리게
+/// (내용어 강조), 학습 단어는 밑줄 유지한다. 규칙 기반이라 API 비용 0·모든 길이 대응.
+/// 근거: 안구운동(내용어 고정·기능어 건너뜀), 청크 리딩(CRST), VSTF(구문 재배열)의 이해도 향상.
+const CHUNK_JS: &str = r#"
+(function(){
+  var btn=document.getElementById('chunkbtn'); if(!btn) return;
+  var readerView=document.getElementById('reader-view');
+  var ta=document.querySelector('#reader-edit textarea');
+  var vocab={}; try{ var vn=document.getElementById('reader-vocab'); if(vn) vocab=JSON.parse(vn.textContent||'{}'); }catch(e){}
+  var on=false, orig='';
+  var FN={}, TRIG={};
+  ("a an the of to in on at for with from by as into onto about over under above below after before between through during without within is are was were be been being am do does did have has had will would can could may might must shall should and or but nor so yet not no than then there here it its his her their our your my we you they them").split(' ').forEach(function(w){ FN[w]=1; });
+  ("to of in on at for with from by as into onto about over under after before between through that which who whom whose because although though while when where if since unless and but or so yet").split(' ').forEach(function(w){ TRIG[w]=1; });
+
+  function isTok(ch){ return /[\p{L}'’]/u.test(ch); }
+  function tokenize(s){ var t=[],i=0,n=s.length; while(i<n){ var j=i; while(j<n&&isTok(s[j]))j++; var w=s.slice(i,j),k=j; while(k<n&&!isTok(s[k]))k++; var sep=s.slice(j,k); if(w||sep)t.push({w:w,sep:sep}); i=k; } return t; }
+  // 토큰을 의미 단위 청크로 묶는다: 트리거(전치사·접속사)나 4단어 초과에서 새 청크, 문장부호 뒤 분리.
+  function chunkSentence(toks){ var out=[],cur=[]; for(var i=0;i<toks.length;i++){ var t=toks[i],lw=(t.w||'').toLowerCase(); if(cur.length&&(TRIG[lw]||cur.length>=5)){ out.push(cur); cur=[]; } cur.push(t); if(/[,;:—–]/.test(t.sep)){ out.push(cur); cur=[]; } } if(cur.length)out.push(cur); return out; }
+  function renderChunk(host, chunk, sub){
+    var line=document.createElement('div'); line.className='chunk-line'+(sub?' chunk-sub':'');
+    chunk.forEach(function(t){
+      if(t.w){ var lw=t.w.toLowerCase(), el, def=vocab[lw];
+        if(def){ el=document.createElement('mark'); el.className='vocab'; el.setAttribute('data-def',def); el.textContent=t.w; }
+        else { el=document.createElement('span'); el.textContent=t.w; if(FN[lw]) el.className='fn-word'; }
+        line.appendChild(el);
+      }
+      if(t.sep) line.appendChild(document.createTextNode(t.sep));
+    });
+    host.appendChild(line);
+  }
+  function splitSentences(p){ return p.replace(/\s+/g,' ').trim().split(/(?<=[.!?])\s+/); }
+  function build(){
+    var raw = ta ? ta.value : (readerView.textContent||'');
+    var art=document.createElement('article'); art.className='reader chunk-view';
+    raw.replace(/\r/g,'').split(/\n\n+/).forEach(function(p){
+      p=p.replace(/\n/g,' ').trim(); if(!p) return;
+      var pd=document.createElement('div'); pd.className='chunk-para';
+      splitSentences(p).forEach(function(sent){
+        chunkSentence(tokenize(sent)).forEach(function(ch){
+          var first=(ch[0]&&ch[0].w||'').toLowerCase();
+          renderChunk(pd, ch, TRIG[first]);
+        });
+      });
+      art.appendChild(pd);
+    });
+    return art;
+  }
+  btn.addEventListener('click', function(){
+    if(!on){ orig=readerView.innerHTML; readerView.innerHTML=''; readerView.appendChild(build()); on=true; btn.textContent='📖 일반 보기'; }
+    else { readerView.innerHTML=orig; on=false; btn.textContent='🧩 청크 리딩'; }
+  });
+})();
+"#;
+
 /// 기사 읽어주기(ElevenLabs, 타임스탬프): 버튼 클릭 → /entries/:id/tts(JSON: audio_base64 +
 /// 문자별 시각)를 받아 재생하고, 재생 위치에 맞춰 '읽는 문장'을 하이라이트·자동 스크롤한다.
 /// 재생 중에는 리더를 read-along(문장 span)으로 바꾸고, 끝나면 원래 리더(어휘 밑줄)로 복원.
@@ -2912,7 +2975,7 @@ const TTS_JS: &str = r#"
   var readerView=document.getElementById('reader-view');
   var entry=btn.dataset.entry;
   var fetched=false, readOn=false, origHTML='', sents=[], spans=[], cur=-1;
-  var vocab={}; try { var vn=document.getElementById('tts-vocab'); if(vn) vocab=JSON.parse(vn.textContent||'{}'); } catch(e){}
+  var vocab={}; try { var vn=document.getElementById('reader-vocab'); if(vn) vocab=JSON.parse(vn.textContent||'{}'); } catch(e){}
 
   function applyRate(){ if(rate) audio.playbackRate=parseFloat(rate.value)||1; }
   function b64ToBlob(b64,type){ var bin=atob(b64),n=bin.length,a=new Uint8Array(n); for(var i=0;i<n;i++)a[i]=bin.charCodeAt(i); return new Blob([a],{type:type}); }
