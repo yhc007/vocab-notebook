@@ -346,6 +346,23 @@ impl Extractor {
         Ok(ChunkedText { paras })
     }
 
+    /// 나만의 문법책 항목에 대한 질문에 답한다(문장 + 내 노트를 문맥으로). 노트에 바로 붙일 수
+    /// 있게 간결한 한국어 마크다운으로 문법 규칙·구조·쓰임을 정리해준다.
+    pub async fn ask_grammar(&self, sentence: &str, note: &str, question: &str) -> Result<String> {
+        let ctx = if note.trim().is_empty() {
+            "(아직 없음)".to_string()
+        } else {
+            note.to_string()
+        };
+        let prompt = format!(
+            "나는 영어 문장으로 '나만의 문법책'을 만들고 있다. 아래 문장과 내 노트를 참고해 내 질문에 \
+             한국어로 친절하고 구체적으로 답해줘. 문법 규칙·구조·쓰임을 노트에 바로 붙일 수 있게 \
+             간결한 마크다운으로 정리하고, 필요하면 예문을 곁들여라.\n\n\
+             === 문장 ===\n{sentence}\n\n=== 내 노트 ===\n{ctx}\n\n=== 질문 ===\n{question}",
+        );
+        self.message(&prompt, 1500).await
+    }
+
     /// 기사를 '청크 리딩'용으로 문단별 구/절 단위(청크)로 끊는다(구문 인식 기반, 기사당 1회).
     /// 원문 단어는 그대로 두고 끊기만 하며, 청크를 공백으로 이으면 원문과 같아야 한다.
     pub async fn analyze_chunks(&self, article: &str) -> Result<ChunkedText> {

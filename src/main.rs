@@ -95,6 +95,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/sentences/review", get(grammar_review))
         .route("/sentences/grammar", get(sentence_grammar))
         .route("/sentences/point", get(sentence_point))
+        .route("/book", get(book_page))
+        .route("/book/add", post(book_add))
+        .route("/book/:id/note", post(book_note))
+        .route("/book/:id/delete", post(book_delete))
+        .route("/book/:id/ask", post(book_ask))
         .route("/review", get(review))
         .route("/export/words.csv", get(export_words_csv).post(export_words_csv_sel))
         .route("/export/words.tsv", get(export_words_anki).post(export_words_anki_sel))
@@ -916,6 +921,11 @@ async fn list_sentences(
                    <div class=\"reason\">💡 {reason}</div>\
                    <div class=\"gram-actions\">\
                      <button class=\"gram-btn\" title=\"이 문장의 구조 그래프 + 문법 포인트\">🔍 문법 분석</button>\
+                     <form method=\"post\" action=\"/book/add\" class=\"addbook\">\
+                       <input type=\"hidden\" name=\"sentence\" value=\"{text}\">\
+                       <input type=\"hidden\" name=\"source\" value=\"{cat}\">\
+                       <button class=\"gram-btn\" title=\"나만의 문법책에 담기\">📘 문법책에 추가</button>\
+                     </form>\
                    </div>\
                    <div class=\"gram\" data-text=\"{text}\" hidden></div>\
                  </li>",
@@ -954,6 +964,105 @@ async fn grammar_review(State(st): State<AppState>) -> Result<Html<String>, AppE
         js = GRAMMAR_REVIEW_JS,
     );
     Ok(page("문법 카드 복습", &body))
+}
+
+/// 나만의 문법책: 담은 문장 + 내 노트(요약·생각) + 항목별 LLM Q&A.
+async fn book_page(State(st): State<AppState>) -> Result<Html<String>, AppError> {
+    let items = st.db.list_book().await.map_err(AppError::from)?;
+    let mut body = format!("{}<h1>📘 나만의 문법책</h1>", nav("book"));
+    body.push_str("<p class=\"reader-hint\">베스트 문장을 담아 내 노트로 정리하고, 궁금한 건 🤖 질문해 노트에 붙이세요.</p>");
+    if items.is_empty() {
+        body.push_str("<p class=\"empty\">아직 비어 있어요. <a href=\"/sentences\">베스트 문장</a>에서 ‘📘 문법책에 추가’로 담아 보세요.</p>");
+    } else {
+        body.push_str("<ul class=\"cards book-list\">");
+        for (id, sentence, note, source, ts) in &items {
+            body.push_str(&format!(
+                "<li class=\"card book-item\">\
+                   <div class=\"head\"><span class=\"reason\">{src} · {time}</span>\
+                     <form method=\"post\" action=\"/book/{id}/delete\" class=\"del\" onsubmit=\"return confirm('이 항목을 삭제할까요?')\"><button title=\"삭제\">🗑</button></form></div>\
+                   <blockquote class=\"sentence\">{sentence}</blockquote>\
+                   <form method=\"post\" action=\"/book/{id}/note\" class=\"book-note\">\
+                     <textarea name=\"note\" placeholder=\"내 요약·생각을 적어 보세요 (마크다운)\">{note}</textarea>\
+                     <div class=\"book-ask\">\
+                       <input type=\"text\" class=\"ask-q\" placeholder=\"🤖 이 문장/문법에 대해 질문…\">\
+                       <button type=\"button\" class=\"ask-btn\" data-id=\"{id}\">질문</button>\
+                       <button type=\"submit\" class=\"note-save\">노트 저장</button>\
+                     </div>\
+                     <div class=\"ask-out\" hidden></div>\
+                   </form>\
+                 </li>",
+                src = esc(if source.is_empty() { "직접 추가" } else { source }),
+                time = esc(&fmt_date(*ts)),
+                sentence = esc(sentence),
+                note = esc(note),
+            ));
+        }
+        body.push_str("</ul>");
+        body.push_str(&format!("<script>{BOOK_JS}</script>"));
+    }
+    Ok(page("나만의 문법책", &body))
+}
+
+/// 베스트 문장을 문법책에 담는다(sentence + source).
+async fn book_add(
+    State(st): State<AppState>,
+    Form(f): Form<HashMap<String, String>>,
+) -> Result<Redirect, AppError> {
+    let sentence = f.get("sentence").map(|s| s.trim()).unwrap_or("").to_string();
+    let source = f.get("source").map(|s| s.trim()).unwrap_or("").to_string();
+    if !sentence.is_empty() {
+        st.db
+            .add_book_item(&sentence, &source)
+            .await
+            .map_err(AppError::from)?;
+    }
+    Ok(Redirect::to("/book"))
+}
+
+/// 항목의 내 노트 저장.
+async fn book_note(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+    Form(f): Form<HashMap<String, String>>,
+) -> Result<Redirect, AppError> {
+    let note = f.get("note").cloned().unwrap_or_default();
+    st.db.save_book_note(id, &note).await.map_err(AppError::from)?;
+    Ok(Redirect::to("/book"))
+}
+
+/// 항목 삭제.
+async fn book_delete(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Redirect, AppError> {
+    st.db.delete_book_item(id).await.map_err(AppError::from)?;
+    Ok(Redirect::to("/book"))
+}
+
+/// 항목에 대한 LLM 질문 → 답(JSON). 클라이언트가 노트에 붙일 수 있게 한다.
+async fn book_ask(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+    Form(f): Form<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let question = f
+        .get("question")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError("질문을 입력해 주세요".into()))?;
+    let (sentence, note, _src) = st
+        .db
+        .get_book_item(id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError("항목을 찾을 수 없습니다".into()))?;
+    let answer = st
+        .extractor
+        .ask_grammar(&sentence, &note, &question)
+        .await
+        .map_err(AppError::from)?;
+    let body = serde_json::to_string(&serde_json::json!({ "answer": answer })).unwrap_or_default();
+    Ok(json_response(body))
 }
 
 /// 플래시카드 복습. 복습 대상 단어를 덱(JSON)으로 내려보내고,
@@ -1673,11 +1782,12 @@ fn nav(active: &str) -> String {
         format!("<a href=\"{href}\"{cls}>{label}</a>")
     };
     format!(
-        "<nav>{}{}{}{}{}<a class=\"right\" href=\"/auth/logout\">로그아웃</a></nav>",
+        "<nav>{}{}{}{}{}{}<a class=\"right\" href=\"/auth/logout\">로그아웃</a></nav>",
         link("/", "붙여넣기", "home"),
         link("/entries", "내 기사", "entries"),
         link("/words", "단어장", "words"),
         link("/sentences", "베스트 문장", "sentences"),
+        link("/book", "📘 문법책", "book"),
         link("/review", "복습", "review"),
     )
 }
@@ -2002,6 +2112,24 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
   font-weight: 600; font-size: .9rem; color: #fff; border: 0; border-radius: 999px; padding: .45rem 1rem;
   background: linear-gradient(135deg, var(--accent), var(--accent2)); box-shadow: 0 4px 14px rgba(10,132,255,.32); }
 .resume-chip:hover { transform: translateY(-1px); }
+/* 나만의 문법책 */
+.addbook { display: inline; }
+.book-item .head { display: flex; align-items: center; gap: .6rem; }
+.book-item .del { margin-left: auto; }
+.book-note { display: flex; flex-direction: column; gap: .5rem; margin-top: .6rem; }
+.book-note textarea { width: 100%; box-sizing: border-box; min-height: 5rem; font: inherit; color: var(--ink);
+  background: rgba(255,255,255,.65); border: 1px solid var(--brd); border-radius: 12px; padding: .6rem .7rem; resize: vertical; line-height: 1.55; }
+.book-note textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(10,132,255,.18); }
+.book-ask { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.ask-q { flex: 1; min-width: 9rem; font: inherit; color: var(--ink); background: rgba(255,255,255,.65);
+  border: 1px solid var(--brd); border-radius: 10px; padding: .45rem .6rem; }
+.ask-btn, .note-save { cursor: pointer; font-weight: 600; font-size: .85rem; border-radius: 10px; padding: .45rem .85rem; border: 1px solid var(--brd); }
+.ask-btn { color: var(--accent); background: rgba(255,255,255,.6); }
+.note-save { color: #fff; border: 0; background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+.ask-ans { white-space: pre-wrap; margin-top: .4rem; background: rgba(255,255,255,.55); border: 1px solid var(--brd);
+  border-radius: 12px; padding: .6rem .8rem; line-height: 1.6; }
+.ask-add { margin-top: .4rem; cursor: pointer; font-weight: 600; font-size: .82rem; color: var(--accent);
+  background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 10px; padding: .3rem .7rem; }
 /* 읽기 멈춤/이어 읽기 플로팅 버튼(스크롤해도 우하단 고정) */
 .reader-fab { position: fixed; right: 1.2rem; bottom: 1.2rem; z-index: 900;
   width: 3.4rem; height: 3.4rem; border-radius: 50%; border: none; cursor: pointer;
@@ -2240,6 +2368,32 @@ const REVIEW_JS: &str = r#"
   });
   if (!deck.length){ root.innerHTML = '<p class="empty">복습할 단어가 없습니다. <a href="/">본문을 붙여넣어</a> 추출해 보세요.</p>'; }
   else render();
+})();
+"#;
+
+/// 나만의 문법책: 항목별 '질문' 버튼 → /book/:id/ask로 답을 받아 보여주고, '노트에 추가'로
+/// textarea에 Q&A를 붙인다(그 뒤 '노트 저장'으로 서버에 저장).
+const BOOK_JS: &str = r#"
+(function(){
+  document.querySelectorAll('.ask-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var form=btn.closest('.book-note'); if(!form) return;
+      var qi=form.querySelector('.ask-q'), q=(qi.value||'').trim(); if(!q) return;
+      var out=form.querySelector('.ask-out'), ta=form.querySelector('textarea[name=note]');
+      out.hidden=false; out.textContent='🤖 생각 중…'; btn.disabled=true;
+      fetch('/book/'+btn.dataset.id+'/ask', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'question='+encodeURIComponent(q)})
+        .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+        .then(function(d){
+          var ans=d.answer||''; out.textContent='';
+          var box=document.createElement('div'); box.className='ask-ans'; box.textContent=ans; out.appendChild(box);
+          var add=document.createElement('button'); add.type='button'; add.className='ask-add'; add.textContent='＋ 노트에 추가';
+          add.onclick=function(){ ta.value=(ta.value.trim()?ta.value.trim()+'\n\n':'')+'### Q: '+q+'\n'+ans; out.hidden=true; qi.value=''; ta.focus(); };
+          out.appendChild(add);
+        })
+        .catch(function(){ out.textContent='답을 가져오지 못했어요. 잠시 후 다시 시도해 주세요.'; })
+        .then(function(){ btn.disabled=false; });
+    });
+  });
 })();
 "#;
 

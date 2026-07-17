@@ -101,6 +101,9 @@ impl Db {
             // 문법 포인트 상세(강의 본문) 캐시(문장+포인트 결합 해시 → 상세 JSON: 설명+예문).
             "CREATE TABLE IF NOT EXISTS vocab.point_detail (\
                 pkey text PRIMARY KEY, detail text, created_at timestamp)",
+            // 나만의 문법책: 선택한 베스트 문장 + 내 노트(요약·생각) + LLM Q&A 누적. 단일 PK(id).
+            "CREATE TABLE IF NOT EXISTS vocab.grammar_book (\
+                id uuid PRIMARY KEY, sentence text, note text, source text, created_at timestamp)",
         ];
         for s in stmts {
             if let Err(e) = self.exec(s).await {
@@ -453,6 +456,87 @@ impl Db {
             cql_str(analysis_json),
         );
         self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 문법책에 항목 추가(선택한 문장). 새 id를 돌려준다. 노트는 빈 문자열로 시작.
+    pub async fn add_book_item(&self, sentence: &str, source: &str) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        let now = Utc::now().timestamp_millis();
+        let cql = format!(
+            "INSERT INTO vocab.grammar_book (id, sentence, note, source, created_at) \
+             VALUES ({id}, {}, '', {}, {now})",
+            cql_str(sentence),
+            cql_str(source),
+        );
+        self.exec(&cql).await?;
+        Ok(id)
+    }
+
+    /// 문법책 전체 항목(최신순). 반환: (id, sentence, note, source, created_at).
+    #[allow(clippy::type_complexity)]
+    pub async fn list_book(&self) -> Result<Vec<(Uuid, String, String, String, i64)>> {
+        let v = self
+            .exec("SELECT id, sentence, note, source, created_at FROM vocab.grammar_book")
+            .await?;
+        let mut out: Vec<(Uuid, String, String, String, i64)> = rows(&v)
+            .iter()
+            .filter_map(|r| {
+                Some((
+                    uuid_col(r, "id")?,
+                    text(r, "sentence"),
+                    text(r, "note"),
+                    text(r, "source"),
+                    ts_col(r, "created_at").unwrap_or(0),
+                ))
+            })
+            .collect();
+        out.sort_by(|a, b| b.4.cmp(&a.4));
+        Ok(out)
+    }
+
+    /// 문법책 항목 하나. 반환: (sentence, note, source).
+    pub async fn get_book_item(&self, id: Uuid) -> Result<Option<(String, String, String)>> {
+        let cql = format!("SELECT sentence, note, source FROM vocab.grammar_book WHERE id = {id}");
+        let v = self.exec(&cql).await?;
+        Ok(rows(&v)
+            .first()
+            .map(|r| (text(r, "sentence"), text(r, "note"), text(r, "source"))))
+    }
+
+    /// 항목의 내 노트를 저장(덮어쓰기). INSERT가 upsert라 sentence/source/created_at은
+    /// 기존 값을 읽어 그대로 유지(순서 안 바뀌게).
+    pub async fn save_book_note(&self, id: Uuid, note: &str) -> Result<()> {
+        let v = self
+            .exec(&format!(
+                "SELECT sentence, source, created_at FROM vocab.grammar_book WHERE id = {id}"
+            ))
+            .await?;
+        let (sentence, source, created): (String, String, i64) = rows(&v)
+            .first()
+            .map(|r| {
+                (
+                    text(r, "sentence"),
+                    text(r, "source"),
+                    ts_col(r, "created_at").unwrap_or(0),
+                )
+            })
+            .unwrap_or_default();
+        let cql = format!(
+            "INSERT INTO vocab.grammar_book (id, sentence, note, source, created_at) \
+             VALUES ({id}, {}, {}, {}, {created})",
+            cql_str(&sentence),
+            cql_str(note),
+            cql_str(&source),
+        );
+        self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 항목 삭제(단일 PK라 실제로 지워진다).
+    pub async fn delete_book_item(&self, id: Uuid) -> Result<()> {
+        self.exec(&format!("DELETE FROM vocab.grammar_book WHERE id = {id}"))
+            .await?;
         Ok(())
     }
 
