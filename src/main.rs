@@ -437,10 +437,7 @@ async fn entry_detail(
     body.push_str(&format!("<script>{MINDMAP_JS}</script>"));
     body.push_str(&format!("<script>{SUMMARY_JS}</script>"));
     body.push_str(&format!("<script>{READER_EDIT_JS}</script>"));
-    body.push_str(&format!("<script>{CHUNK_JS}</script>"));
-    if st.tts.is_some() {
-        body.push_str(&format!("<script>{TTS_JS}</script>"));
-    }
+    body.push_str(&format!("<script>{READER_JS}</script>"));
     Ok(page("기사", &body))
 }
 
@@ -1974,8 +1971,8 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .chunk-sub { margin-left: 1.7rem; }
 .fn-word { opacity: .42; }
 .tts-sent { border-radius: 5px; transition: background .12s; }
-.tts-on { background: rgba(10,132,255,.16); box-shadow: 0 0 0 3px rgba(10,132,255,.16); }
-@media (prefers-color-scheme: dark) { .tts-on { background: rgba(100,180,255,.22); box-shadow: 0 0 0 3px rgba(100,180,255,.22); } }
+.tts-on, .chunk-line.chunk-on { background: rgba(10,132,255,.16); box-shadow: 0 0 0 3px rgba(10,132,255,.16); border-radius: 5px; }
+@media (prefers-color-scheme: dark) { .tts-on, .chunk-line.chunk-on { background: rgba(100,180,255,.22); box-shadow: 0 0 0 3px rgba(100,180,255,.22); } }
 .edit-toggle, .ghost { cursor: pointer; font-weight: 600; font-size: .85rem; color: var(--accent);
   background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 10px; padding: .35rem .8rem; }
 .edit-toggle:hover, .ghost:hover { background: #fff; }
@@ -2952,171 +2949,99 @@ const READER_EDIT_JS: &str = r#"
 })();
 "#;
 
-/// 청크 리딩(VSTF): 기사를 의미 단위(구/절)로 끊어 계단식으로 배치하고, 기능어를 흐리게
-/// (내용어 강조), 학습 단어는 밑줄 유지한다. 규칙 기반이라 API 비용 0·모든 길이 대응.
-/// 근거: 안구운동(내용어 고정·기능어 건너뜀), 청크 리딩(CRST), VSTF(구문 재배열)의 이해도 향상.
-const CHUNK_JS: &str = r#"
+/// 리더 컨트롤 통합: 청크 리딩(VSTF 계단식) + 읽어주기(TTS 하이라이트)를 한 스크립트로 묶어
+/// 서로 협조하게 한다. 특히 '청크 모드에서 재생하면 청크 줄을 시간에 맞춰 하이라이트'한다.
+/// 어휘 밑줄·기능어 흐리게는 두 뷰 공용. 근거: 안구운동(내용어 고정), 청크 리딩(CRST), VSTF.
+const READER_JS: &str = r#"
 (function(){
-  var btn=document.getElementById('chunkbtn'); if(!btn) return;
-  var readerView=document.getElementById('reader-view');
+  var readerView=document.getElementById('reader-view'); if(!readerView) return;
+  var chunkBtn=document.getElementById('chunkbtn');
+  var ttsBtn=document.getElementById('ttsbtn');
+  var audio=document.getElementById('ttsaudio');
+  var rate=document.getElementById('ttsrate');
   var ta=document.querySelector('#reader-edit textarea');
-  var entry=btn.dataset.entry;
   var vocab={}; try{ var vn=document.getElementById('reader-vocab'); if(vn) vocab=JSON.parse(vn.textContent||'{}'); }catch(e){}
-  var on=false, orig='';
+  var baseHTML=readerView.innerHTML;
+  var chunkOn=false, align=null, audioReady=false, units=[], cur=-1;
+
   var FN={}, TRIG={};
   ("a an the of to in on at for with from by as into onto about over under above below after before between through during without within is are was were be been being am do does did have has had will would can could may might must shall should and or but nor so yet not no than then there here it its his her their our your my we you they them").split(' ').forEach(function(w){ FN[w]=1; });
   ("to of in on at for with from by as into onto about over under after before between through that which who whom whose because although though while when where if since unless and but or so yet").split(' ').forEach(function(w){ TRIG[w]=1; });
-
   function isTok(ch){ return /[\p{L}'’]/u.test(ch); }
   function tokenize(s){ var t=[],i=0,n=s.length; while(i<n){ var j=i; while(j<n&&isTok(s[j]))j++; var w=s.slice(i,j),k=j; while(k<n&&!isTok(s[k]))k++; var sep=s.slice(j,k); if(w||sep)t.push({w:w,sep:sep}); i=k; } return t; }
-  // 토큰을 의미 단위 청크로 묶는다: 트리거(전치사·접속사)나 4단어 초과에서 새 청크, 문장부호 뒤 분리.
-  function chunkSentence(toks){ var out=[],cur=[]; for(var i=0;i<toks.length;i++){ var t=toks[i],lw=(t.w||'').toLowerCase(); if(cur.length&&(TRIG[lw]||cur.length>=5)){ out.push(cur); cur=[]; } cur.push(t); if(/[,;:—–]/.test(t.sep)){ out.push(cur); cur=[]; } } if(cur.length)out.push(cur); return out; }
-  function renderChunk(host, chunk, sub){
-    var line=document.createElement('div'); line.className='chunk-line'+(sub?' chunk-sub':'');
-    chunk.forEach(function(t){
-      if(t.w){ var lw=t.w.toLowerCase(), el, def=vocab[lw];
-        if(def){ el=document.createElement('mark'); el.className='vocab'; el.setAttribute('data-def',def); el.textContent=t.w; }
-        else { el=document.createElement('span'); el.textContent=t.w; if(FN[lw]) el.className='fn-word'; }
-        line.appendChild(el);
-      }
-      if(t.sep) line.appendChild(document.createTextNode(t.sep));
-    });
-    host.appendChild(line);
-  }
-  function splitSentences(p){ return p.replace(/\s+/g,' ').trim().split(/(?<=[.!?])\s+/); }
-  function build(){
-    var raw = ta ? ta.value : (readerView.textContent||'');
-    var art=document.createElement('article'); art.className='reader chunk-view';
-    raw.replace(/\r/g,'').split(/\n\n+/).forEach(function(p){
-      p=p.replace(/\n/g,' ').trim(); if(!p) return;
-      var pd=document.createElement('div'); pd.className='chunk-para';
-      splitSentences(p).forEach(function(sent){
-        chunkSentence(tokenize(sent)).forEach(function(ch){
-          var first=(ch[0]&&ch[0].w||'').toLowerCase();
-          renderChunk(pd, ch, TRIG[first]);
-        });
-      });
-      art.appendChild(pd);
-    });
-    return art;
-  }
-  // LLM(문법 파서) 청크: 서버가 준 문단별 청크를 그대로 계단식으로 렌더.
-  function buildFromParas(paras){
-    var art=document.createElement('article'); art.className='reader chunk-view';
-    paras.forEach(function(chunks){
-      var pd=document.createElement('div'); pd.className='chunk-para';
-      chunks.forEach(function(ct){
-        var toks=tokenize(String(ct));
-        var first=(toks[0]&&toks[0].w||'').toLowerCase();
-        renderChunk(pd, toks, TRIG[first]);
-      });
-      art.appendChild(pd);
-    });
-    return art;
-  }
-  btn.addEventListener('click', function(){
-    if(on){ readerView.innerHTML=orig; on=false; btn.textContent='🧩 청크 리딩'; return; }
-    orig=readerView.innerHTML; btn.disabled=true; btn.textContent='🧩 분석 중…';
-    fetch('/entries/'+entry+'/chunks')
-      .then(function(r){ if(!r.ok) throw 0; return r.json(); })
-      .then(function(d){ var paras=(d&&d.paras)||[]; readerView.innerHTML=''; readerView.appendChild(paras.length?buildFromParas(paras):build()); })
-      .catch(function(){ readerView.innerHTML=''; readerView.appendChild(build()); }) // 실패 시 규칙 기반 폴백
-      .then(function(){ on=true; btn.disabled=false; btn.textContent='📖 일반 보기'; });
-  });
-})();
-"#;
-
-/// 기사 읽어주기(ElevenLabs, 타임스탬프): 버튼 클릭 → /entries/:id/tts(JSON: audio_base64 +
-/// 문자별 시각)를 받아 재생하고, 재생 위치에 맞춰 '읽는 문장'을 하이라이트·자동 스크롤한다.
-/// 재생 중에는 리더를 read-along(문장 span)으로 바꾸고, 끝나면 원래 리더(어휘 밑줄)로 복원.
-const TTS_JS: &str = r#"
-(function(){
-  var btn=document.getElementById('ttsbtn'); if(!btn) return;
-  var audio=document.getElementById('ttsaudio');
-  var rate=document.getElementById('ttsrate');
-  var readerView=document.getElementById('reader-view');
-  var entry=btn.dataset.entry;
-  var fetched=false, readOn=false, origHTML='', sents=[], spans=[], cur=-1;
-  var vocab={}; try { var vn=document.getElementById('reader-vocab'); if(vn) vocab=JSON.parse(vn.textContent||'{}'); } catch(e){}
-
-  function applyRate(){ if(rate) audio.playbackRate=parseFloat(rate.value)||1; }
   function b64ToBlob(b64,type){ var bin=atob(b64),n=bin.length,a=new Uint8Array(n); for(var i=0;i<n;i++)a[i]=bin.charCodeAt(i); return new Blob([a],{type:type}); }
-  // 단어 문자(알파벳 + 아포스트로피). 서버 is_token_char와 동일 기준.
-  function isTok(ch){ return /[\p{L}'’]/u.test(ch); }
-  // 문장 텍스트를 토큰 단위로 채우되, vocab에 있으면 <mark class="vocab">로 밑줄.
-  function fillSentence(span, text){
-    var i=0, n=text.length;
-    while(i<n){
-      var j=i;
-      if(isTok(text[i])){
-        while(j<n && isTok(text[j])) j++;
-        var w=text.slice(i,j), def=vocab[w.toLowerCase()];
-        if(def){ var m=document.createElement('mark'); m.className='vocab'; m.setAttribute('data-def',def); m.textContent=w; span.appendChild(m); }
-        else span.appendChild(document.createTextNode(w));
-      } else {
-        while(j<n && !isTok(text[j])) j++;
-        span.appendChild(document.createTextNode(text.slice(i,j)));
-      }
-      i=j;
-    }
-  }
-  // 문자열을 문장 단위로 나눠 각 문장의 시작/끝 시각(초)을 구한다.
-  function buildSentences(chars,starts,ends){
-    var out=[], st=-1;
-    for(var i=0;i<chars.length;i++){
-      if(st<0) st=i;
-      var c=chars[i];
-      var endMark=/[.!?]/.test(c) && ((i+1>=chars.length) || /\s/.test(chars[i+1]));
-      if(endMark || c==='\n' || i===chars.length-1){
-        out.push({start:starts[st]||0, end:ends[i]||0, text:chars.slice(st,i+1).join('')});
-        st=-1;
-      }
-    }
-    return out;
-  }
-  function enter(){
-    if(readOn) return;
-    origHTML=readerView.innerHTML;
-    var art=document.createElement('article'); art.className='reader tts-readalong';
-    sents.forEach(function(s){ var sp=document.createElement('span'); sp.className='tts-sent'; fillSentence(sp, s.text); art.appendChild(sp); });
-    readerView.innerHTML=''; readerView.appendChild(art);
-    spans=Array.prototype.slice.call(art.querySelectorAll('.tts-sent'));
-    readOn=true; cur=-1;
-  }
-  function exit(){ if(!readOn) return; readerView.innerHTML=origHTML; readOn=false; spans=[]; cur=-1; }
-  function highlight(t){
-    var idx=-1;
-    for(var k=0;k<sents.length;k++){ if(t>=sents[k].start && t<sents[k].end){ idx=k; break; } }
-    if(idx===cur) return; cur=idx;
-    for(var k=0;k<spans.length;k++) spans[k].classList.toggle('tts-on', k===idx);
-    if(idx>=0 && spans[idx]) spans[idx].scrollIntoView({block:'center', behavior:'smooth'});
-  }
+  // 토큰들을 host에 채우되 vocab은 밑줄(mark), 기능어는 흐리게(fn-word).
+  function fillTokens(host, toks){ toks.forEach(function(t){ if(t.w){ var lw=t.w.toLowerCase(), el, def=vocab[lw]; if(def){ el=document.createElement('mark'); el.className='vocab'; el.setAttribute('data-def',def); el.textContent=t.w; } else { el=document.createElement('span'); el.textContent=t.w; if(FN[lw]) el.className='fn-word'; } host.appendChild(el); } if(t.sep) host.appendChild(document.createTextNode(t.sep)); }); }
 
-  audio.addEventListener('timeupdate', function(){ if(readOn) highlight(audio.currentTime); });
-  audio.addEventListener('ended', function(){ exit(); btn.textContent='🔊 다시 듣기'; });
-  audio.addEventListener('play', function(){ btn.textContent='⏸ 일시정지'; });
-  audio.addEventListener('pause', function(){ if(!audio.ended) btn.textContent='▶ 이어 듣기'; });
+  // ---- 청크 뷰 ----
+  function chunkLine(host, toks, sub){ var line=document.createElement('div'); line.className='chunk-line'+(sub?' chunk-sub':''); fillTokens(line, toks); host.appendChild(line); }
+  function chunkSentence(toks){ var out=[],c=[]; for(var i=0;i<toks.length;i++){ var t=toks[i],lw=(t.w||'').toLowerCase(); if(c.length&&(TRIG[lw]||c.length>=5)){ out.push(c); c=[]; } c.push(t); if(/[,;:—–]/.test(t.sep)){ out.push(c); c=[]; } } if(c.length)out.push(c); return out; }
+  function splitSents(p){ return p.replace(/\s+/g,' ').trim().split(/(?<=[.!?])\s+/); }
+  function buildRule(){ var raw=ta?ta.value:(readerView.textContent||''); var art=document.createElement('article'); art.className='reader chunk-view';
+    raw.replace(/\r/g,'').split(/\n\n+/).forEach(function(p){ p=p.replace(/\n/g,' ').trim(); if(!p)return; var pd=document.createElement('div'); pd.className='chunk-para';
+      splitSents(p).forEach(function(s){ chunkSentence(tokenize(s)).forEach(function(ch){ var f=(ch[0]&&ch[0].w||'').toLowerCase(); chunkLine(pd, ch, TRIG[f]); }); }); art.appendChild(pd); });
+    return art; }
+  function buildParas(paras){ var art=document.createElement('article'); art.className='reader chunk-view';
+    paras.forEach(function(chunks){ var pd=document.createElement('div'); pd.className='chunk-para';
+      chunks.forEach(function(ct){ var toks=tokenize(String(ct)); var f=(toks[0]&&toks[0].w||'').toLowerCase(); chunkLine(pd, toks, TRIG[f]); }); art.appendChild(pd); });
+    return art; }
 
-  btn.addEventListener('click', function(){
-    if(!fetched){
-      btn.disabled=true; btn.textContent='🔊 생성 중…';
-      fetch('/entries/'+entry+'/tts')
-        .then(function(r){ if(!r.ok) throw 0; return r.json(); })
-        .then(function(d){
-          var a=d.alignment||{};
-          sents=buildSentences(a.characters||[], a.character_start_times_seconds||[], a.character_end_times_seconds||[]);
-          audio.hidden=false;
-          audio.src=URL.createObjectURL(b64ToBlob(d.audio_base64||'', 'audio/mpeg'));
-          applyRate(); fetched=true; btn.disabled=false;
-          enter(); audio.play().catch(function(){});
-        })
-        .catch(function(){ btn.disabled=false; btn.textContent='🔊 읽어주기'; audio.hidden=true; alert('오디오를 만들지 못했어요. (키·크레딧을 확인하세요)'); });
-      return;
-    }
-    if(audio.ended){ enter(); audio.currentTime=0; audio.play(); return; }
-    if(audio.paused){ enter(); audio.play(); } else { audio.pause(); }
+  // ---- read-along(문장) 뷰 ----
+  function buildSentences(chars,starts,ends){ var out=[],st=-1; for(var i=0;i<chars.length;i++){ if(st<0)st=i; var c=chars[i]; var endMark=/[.!?]/.test(c)&&((i+1>=chars.length)||/\s/.test(chars[i+1])); if(endMark||c==='\n'||i===chars.length-1){ out.push({start:starts[st]||0,end:ends[i]||0,text:chars.slice(st,i+1).join('')}); st=-1; } } return out; }
+  function renderSentences(){ var art=document.createElement('article'); art.className='reader tts-readalong'; var sents=align?buildSentences(align.chars,align.starts,align.ends):[], els=[];
+    sents.forEach(function(s){ var sp=document.createElement('span'); sp.className='tts-sent'; fillTokens(sp, tokenize(s.text)); art.appendChild(sp); els.push(sp); });
+    readerView.innerHTML=''; readerView.appendChild(art); cur=-1;
+    units=sents.map(function(s,k){ return {el:els[k], start:s.start, end:s.end}; }); }
+
+  // ---- 청크 줄에 시각 부여(오디오 하이라이트용): 청크 텍스트를 TTS 문자열에 순서대로 정렬 ----
+  function assignChunkTimes(){ units=[]; cur=-1; if(!align) return; var lines=readerView.querySelectorAll('.chunk-line'), chars=align.chars, pos=0;
+    lines.forEach(function(line){ var txt=line.textContent, s=-1, e=-1;
+      for(var k=0;k<txt.length;k++){ if(/\s/.test(txt[k])) continue; while(pos<chars.length&&/\s/.test(chars[pos]))pos++; if(pos>=chars.length)break; if(s<0)s=pos; e=pos; pos++; }
+      if(s>=0) units.push({el:line, start:align.starts[s]||0, end:align.ends[e]||0}); }); }
+
+  function highlight(t){ var idx=-1; for(var k=0;k<units.length;k++){ if(t>=units[k].start && t<units[k].end){ idx=k; break; } } if(idx===cur) return; cur=idx;
+    var cls=chunkOn?'chunk-on':'tts-on'; units.forEach(function(u,k){ u.el.classList.toggle(cls, k===idx); }); if(idx>=0&&units[idx]) units[idx].el.scrollIntoView({block:'center',behavior:'smooth'}); }
+  // 현재 뷰에 맞춰 하이라이트 대상 재설정.
+  function prepareUnits(){ if(chunkOn) assignChunkTimes(); else renderSentences(); }
+  function audioActive(){ return audioReady && !audio.ended; }
+
+  // ---- 청크 토글 ----
+  function showChunk(cb){ readerView.innerHTML='<p class="muted">🧩 분석 중…</p>';
+    fetch('/entries/'+chunkBtn.dataset.entry+'/chunks').then(function(r){ if(!r.ok)throw 0; return r.json(); })
+      .then(function(d){ var paras=(d&&d.paras)||[]; readerView.innerHTML=''; readerView.appendChild(paras.length?buildParas(paras):buildRule()); })
+      .catch(function(){ readerView.innerHTML=''; readerView.appendChild(buildRule()); })
+      .then(function(){ if(cb)cb(); }); }
+  if(chunkBtn) chunkBtn.addEventListener('click', function(){
+    if(chunkOn){ chunkOn=false; chunkBtn.textContent='🧩 청크 리딩';
+      if(audio && audioActive()){ renderSentences(); if(!audio.paused) highlight(audio.currentTime); }
+      else { readerView.innerHTML=baseHTML; units=[]; cur=-1; }
+      return; }
+    chunkOn=true; chunkBtn.disabled=true; chunkBtn.textContent='📖 일반 보기';
+    showChunk(function(){ chunkBtn.disabled=false; if(audio && audioActive()){ assignChunkTimes(); if(!audio.paused) highlight(audio.currentTime); } });
   });
-  if(rate) rate.addEventListener('change', applyRate);
+
+  // ---- 읽어주기 ----
+  function applyRate(){ if(rate&&audio) audio.playbackRate=parseFloat(rate.value)||1; }
+  if(ttsBtn && audio){
+    audio.addEventListener('timeupdate', function(){ if(units.length) highlight(audio.currentTime); });
+    audio.addEventListener('play', function(){ ttsBtn.textContent='⏸ 일시정지'; });
+    audio.addEventListener('pause', function(){ if(!audio.ended) ttsBtn.textContent='▶ 이어 듣기'; });
+    audio.addEventListener('ended', function(){ ttsBtn.textContent='🔊 다시 듣기'; if(chunkOn){ units.forEach(function(u){ u.el.classList.remove('chunk-on'); }); cur=-1; } else { readerView.innerHTML=baseHTML; units=[]; cur=-1; } });
+    ttsBtn.addEventListener('click', function(){
+      if(!audioReady){
+        ttsBtn.disabled=true; ttsBtn.textContent='🔊 생성 중…';
+        fetch('/entries/'+ttsBtn.dataset.entry+'/tts').then(function(r){ if(!r.ok)throw 0; return r.json(); })
+          .then(function(d){ var a=d.alignment||{}; align={chars:a.characters||[],starts:a.character_start_times_seconds||[],ends:a.character_end_times_seconds||[]};
+            audio.hidden=false; audio.src=URL.createObjectURL(b64ToBlob(d.audio_base64||'','audio/mpeg')); applyRate(); audioReady=true; ttsBtn.disabled=false;
+            prepareUnits(); audio.play().catch(function(){}); })
+          .catch(function(){ ttsBtn.disabled=false; ttsBtn.textContent='🔊 읽어주기'; audio.hidden=true; alert('오디오를 만들지 못했어요. (키·크레딧을 확인하세요)'); });
+        return;
+      }
+      if(audio.ended){ prepareUnits(); audio.currentTime=0; audio.play(); return; }
+      if(audio.paused){ if(!units.length) prepareUnits(); audio.play(); } else audio.pause();
+    });
+    if(rate) rate.addEventListener('change', applyRate);
+  }
 })();
 "#;
 
