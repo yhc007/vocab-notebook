@@ -104,6 +104,8 @@ impl Db {
             // 나만의 문법책: 선택한 베스트 문장 + 내 노트(요약·생각) + LLM Q&A 누적. 단일 PK(id).
             "CREATE TABLE IF NOT EXISTS vocab.grammar_book (\
                 id uuid PRIMARY KEY, sentence text, note text, source text, created_at timestamp)",
+            "CREATE TABLE IF NOT EXISTS vocab.grammar_notes (\
+                id uuid PRIMARY KEY, title text, body text, created_at timestamp, updated_at timestamp)",
         ];
         for s in stmts {
             if let Err(e) = self.exec(s).await {
@@ -544,6 +546,97 @@ impl Db {
         self.exec(&format!(
             "INSERT INTO vocab.grammar_book (id, sentence, note, source, created_at) \
              VALUES ({id}, '', '', '', {now})"
+        ))
+        .await?;
+        Ok(())
+    }
+
+    // ── 나만의 문법 노트(문서 단위, 마크다운) ─────────────────────────────
+    // grammar_book(문장 단위)과 별개. 단일 PK라 INSERT=upsert로 안전.
+
+    /// 새 노트 생성. 반환: 새 id.
+    pub async fn create_note(&self, title: &str, body: &str) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        let now = Utc::now().timestamp_millis();
+        self.exec(&format!(
+            "INSERT INTO vocab.grammar_notes (id, title, body, created_at, updated_at) \
+             VALUES ({id}, {}, {}, {now}, {now})",
+            cql_str(title),
+            cql_str(body),
+        ))
+        .await?;
+        Ok(id)
+    }
+
+    /// 노트 목록(최근 수정순). 반환: (id, title, updated_at).
+    /// 제목·본문이 모두 빈 행은 소프트 삭제된 것으로 보고 제외.
+    pub async fn list_notes(&self) -> Result<Vec<(Uuid, String, i64)>> {
+        let v = self
+            .exec("SELECT id, title, body, updated_at FROM vocab.grammar_notes")
+            .await?;
+        let mut out: Vec<(Uuid, String, i64)> = rows(&v)
+            .iter()
+            .filter_map(|r| {
+                let title = text(r, "title");
+                let body = text(r, "body");
+                if title.trim().is_empty() && body.trim().is_empty() {
+                    return None; // 소프트 삭제된 행
+                }
+                Some((uuid_col(r, "id")?, title, ts_col(r, "updated_at").unwrap_or(0)))
+            })
+            .collect();
+        out.sort_by(|a, b| b.2.cmp(&a.2));
+        Ok(out)
+    }
+
+    /// 노트 한 건. 반환: (title, body, created_at).
+    pub async fn get_note(&self, id: Uuid) -> Result<Option<(String, String, i64)>> {
+        let v = self
+            .exec(&format!(
+                "SELECT title, body, created_at FROM vocab.grammar_notes WHERE id = {id}"
+            ))
+            .await?;
+        Ok(rows(&v).first().and_then(|r| {
+            let title = text(r, "title");
+            let body = text(r, "body");
+            // 소프트 삭제(빈 제목+빈 본문) 행은 없는 것으로 취급
+            if title.trim().is_empty() && body.trim().is_empty() {
+                None
+            } else {
+                Some((title, body, ts_col(r, "created_at").unwrap_or(0)))
+            }
+        }))
+    }
+
+    /// 노트 저장(덮어쓰기). created_at은 기존 값을 유지, updated_at만 갱신.
+    pub async fn save_note(&self, id: Uuid, title: &str, body: &str) -> Result<()> {
+        let v = self
+            .exec(&format!(
+                "SELECT created_at FROM vocab.grammar_notes WHERE id = {id}"
+            ))
+            .await?;
+        let now = Utc::now().timestamp_millis();
+        let created = rows(&v)
+            .first()
+            .and_then(|r| ts_col(r, "created_at"))
+            .filter(|&c| c > 0)
+            .unwrap_or(now);
+        self.exec(&format!(
+            "INSERT INTO vocab.grammar_notes (id, title, body, created_at, updated_at) \
+             VALUES ({id}, {}, {}, {created}, {now})",
+            cql_str(title),
+            cql_str(body),
+        ))
+        .await?;
+        Ok(())
+    }
+
+    /// 노트 삭제. CoreDB DELETE가 no-op이라 빈 제목·본문으로 덮어써(upsert) 목록에서 제외.
+    pub async fn delete_note(&self, id: Uuid) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        self.exec(&format!(
+            "INSERT INTO vocab.grammar_notes (id, title, body, created_at, updated_at) \
+             VALUES ({id}, '', '', {now}, {now})"
         ))
         .await?;
         Ok(())

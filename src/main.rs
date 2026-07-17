@@ -101,6 +101,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/book/:id/note", post(book_note))
         .route("/book/:id/delete", post(book_delete))
         .route("/book/:id/ask", post(book_ask))
+        .route("/notes", get(notes_page))
+        .route("/notes/new", post(notes_new))
+        .route("/notes/render", post(notes_render))
+        .route("/notes/:id", get(note_page))
+        .route("/notes/:id/save", post(note_save))
+        .route("/notes/:id/delete", post(note_delete))
         .route("/review", get(review))
         .route("/export/words.csv", get(export_words_csv).post(export_words_csv_sel))
         .route("/export/words.tsv", get(export_words_anki).post(export_words_anki_sel))
@@ -1111,6 +1117,127 @@ async fn book_ask(
     Ok(json_response(body))
 }
 
+// ── 나만의 문법 노트(문서 단위, 마크다운 에디터 + 뷰어) ───────────────────
+
+/// 문법 노트 목록: 내가 만든 노트를 최근 수정순으로. ‘새 노트’로 새 문서를 만든다.
+async fn notes_page(State(st): State<AppState>) -> Result<Html<String>, AppError> {
+    let notes = st.db.list_notes().await.map_err(AppError::from)?;
+    let mut body = format!("{}<h1>📝 나만의 문법 노트</h1>", nav("notes"));
+    body.push_str("<p class=\"reader-hint\">문장 단위가 아니라, 내가 공부한 문법 주제를 <b>문서 한 편</b>으로 자유롭게 정리하세요. 마크다운으로 쓰고, 👁 뷰어로 깔끔한 문서를 확인할 수 있어요.</p>");
+    body.push_str("<form method=\"post\" action=\"/notes/new\" class=\"note-new\"><button class=\"chip primary\">➕ 새 노트</button></form>");
+    if notes.is_empty() {
+        body.push_str("<p class=\"empty\">아직 노트가 없어요. ‘➕ 새 노트’로 첫 문법 노트를 만들어 보세요.</p>");
+    } else {
+        body.push_str("<ul class=\"cards note-list\">");
+        for (id, title, ts) in &notes {
+            let title = if title.trim().is_empty() {
+                "제목 없는 노트"
+            } else {
+                title
+            };
+            body.push_str(&format!(
+                "<li class=\"card note-item\"><a class=\"note-link\" href=\"/notes/{id}\">\
+                   <span class=\"note-name\">📄 {title}</span>\
+                   <span class=\"reason\">{time}</span></a></li>",
+                title = esc(title),
+                time = esc(&fmt_date(*ts)),
+            ));
+        }
+        body.push_str("</ul>");
+    }
+    Ok(page("나만의 문법 노트", &body))
+}
+
+/// 새 노트를 만들고 편집 화면으로 이동.
+async fn notes_new(State(st): State<AppState>) -> Result<Redirect, AppError> {
+    let id = st
+        .db
+        .create_note("제목 없는 노트", "")
+        .await
+        .map_err(AppError::from)?;
+    Ok(Redirect::to(&format!("/notes/{id}")))
+}
+
+/// 노트 편집 화면: 제목 + 마크다운 에디터(툴바) + 뷰어 토글.
+async fn note_page(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Html<String>, AppError> {
+    let Some((title, body_md, _created)) = st.db.get_note(id).await.map_err(AppError::from)? else {
+        let body = format!(
+            "{}<p class=\"empty\">노트를 찾을 수 없어요. <a href=\"/notes\">← 노트 목록</a></p>",
+            nav("notes")
+        );
+        return Ok(page("노트 없음", &body));
+    };
+    let rendered = md_to_html(&body_md);
+    let mut body = nav("notes").to_string();
+    body.push_str(&format!(
+        "<div class=\"note-editor\" data-id=\"{id}\">\
+           <div class=\"note-bar\">\
+             <a class=\"chip\" href=\"/notes\">← 노트</a>\
+             <button type=\"button\" class=\"chip active\" id=\"editbtn\">✏️ 편집</button>\
+             <button type=\"button\" class=\"chip\" id=\"viewbtn\">👁 뷰어</button>\
+             <button type=\"button\" class=\"chip primary\" id=\"savebtn\">💾 저장</button>\
+             <span id=\"savestate\" class=\"muted\"></span>\
+             <form method=\"post\" action=\"/notes/{id}/delete\" class=\"del noview\" onsubmit=\"return confirm('이 노트를 삭제할까요?')\"><button title=\"삭제\">🗑</button></form>\
+           </div>\
+           <input type=\"text\" id=\"notetitle\" class=\"note-title noview\" value=\"{title}\" placeholder=\"노트 제목\">\
+           <div class=\"md-toolbar noview\">\
+             <button type=\"button\" data-md=\"h2\" title=\"제목\">H</button>\
+             <button type=\"button\" data-md=\"bold\" title=\"굵게\"><b>B</b></button>\
+             <button type=\"button\" data-md=\"italic\" title=\"기울임\"><i>I</i></button>\
+             <button type=\"button\" data-md=\"ul\" title=\"목록\">• 목록</button>\
+             <button type=\"button\" data-md=\"quote\" title=\"인용\">❝</button>\
+             <button type=\"button\" data-md=\"code\" title=\"코드\">&lt;/&gt;</button>\
+           </div>\
+           <textarea id=\"notebody\" class=\"note-body noview\" placeholder=\"# 문법 노트\u{a0}\u{a0}마크다운으로 자유롭게 작성하세요…\">{body_md}</textarea>\
+           <h1 id=\"viewtitle\" class=\"view-only\">{title}</h1>\
+           <div id=\"noteview\" class=\"md-view view-only\">{rendered}</div>\
+         </div>",
+        title = esc(&title),
+        body_md = esc(&body_md),
+        rendered = rendered,
+    ));
+    body.push_str(&format!("<script>{NOTE_JS}</script>"));
+    Ok(page(&title, &body))
+}
+
+/// 노트 저장(AJAX). 제목이 비면 기본 제목으로 대체.
+async fn note_save(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+    Form(f): Form<HashMap<String, String>>,
+) -> Result<StatusCode, AppError> {
+    let title = f.get("title").map(|s| s.trim()).unwrap_or("").to_string();
+    let title = if title.is_empty() {
+        "제목 없는 노트".to_string()
+    } else {
+        title
+    };
+    let body = f.get("body").cloned().unwrap_or_default();
+    st.db
+        .save_note(id, &title, &body)
+        .await
+        .map_err(AppError::from)?;
+    Ok(StatusCode::OK)
+}
+
+/// 노트 삭제(소프트).
+async fn note_delete(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Redirect, AppError> {
+    st.db.delete_note(id).await.map_err(AppError::from)?;
+    Ok(Redirect::to("/notes"))
+}
+
+/// 뷰어 토글용: 마크다운을 HTML 조각으로 렌더(저장은 하지 않음).
+async fn notes_render(Form(f): Form<HashMap<String, String>>) -> Html<String> {
+    let md = f.get("md").map(String::as_str).unwrap_or("");
+    Html(md_to_html(md))
+}
+
 /// 플래시카드 복습. 복습 대상 단어를 덱(JSON)으로 내려보내고,
 /// 카드 넘김/뜻 보기/'안다' 표시는 클라이언트 JS가 처리한다('안다'는 /words/known 재사용).
 async fn review(State(st): State<AppState>) -> Result<Html<String>, AppError> {
@@ -1828,12 +1955,13 @@ fn nav(active: &str) -> String {
         format!("<a href=\"{href}\"{cls}>{label}</a>")
     };
     format!(
-        "<nav>{}{}{}{}{}{}<a class=\"right\" href=\"/auth/logout\">로그아웃</a></nav>",
+        "<nav>{}{}{}{}{}{}{}<a class=\"right\" href=\"/auth/logout\">로그아웃</a></nav>",
         link("/", "붙여넣기", "home"),
         link("/entries", "내 기사", "entries"),
         link("/words", "단어장", "words"),
         link("/sentences", "베스트 문장", "sentences"),
         link("/book", "📘 문법책", "book"),
+        link("/notes", "📝 문법노트", "notes"),
         link("/review", "복습", "review"),
     )
 }
@@ -2287,6 +2415,37 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .md-view a { color: var(--accent); }
 .md-view table { border-collapse: collapse; margin: .6rem 0; }
 .md-view th, .md-view td { border: 1px solid var(--brd); padding: .3rem .6rem; }
+/* 나만의 문법 노트 */
+.chip.primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; border: 0; cursor: pointer; }
+.note-new { margin: .2rem 0 1rem; }
+.note-list { list-style: none; padding: 0; }
+.note-item { padding: 0; }
+.note-link { display: flex; justify-content: space-between; align-items: baseline; gap: .8rem;
+  text-decoration: none; color: var(--ink); padding: .9rem 1.1rem; }
+.note-link:hover { background: rgba(255,255,255,.4); border-radius: 14px; }
+.note-name { font-weight: 700; font-size: 1.02rem; }
+.note-editor { margin-top: .4rem; }
+.note-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-bottom: .7rem; }
+.note-bar .del { margin-left: auto; display: inline; }
+.note-bar .del button { background: none; border: 0; cursor: pointer; font-size: 1rem; opacity: .7; }
+.note-bar .del button:hover { opacity: 1; }
+#savestate { font-size: .82rem; }
+.note-title { width: 100%; box-sizing: border-box; font-size: 1.5rem; font-weight: 800;
+  color: var(--ink); background: transparent; border: 0; border-bottom: 2px solid var(--brd);
+  padding: .3rem 0 .5rem; margin-bottom: .7rem; }
+.note-title:focus { outline: none; border-bottom-color: var(--accent); }
+.md-toolbar { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .5rem; }
+.md-toolbar button { font: inherit; font-size: .85rem; color: var(--muted); cursor: pointer;
+  background: rgba(255,255,255,.5); border: 1px solid var(--brd); border-radius: 8px; padding: .25rem .6rem; }
+.md-toolbar button:hover { color: var(--ink); background: #fff; }
+.note-body { width: 100%; box-sizing: border-box; min-height: 60vh; font: inherit;
+  line-height: 1.6; color: var(--ink); background: rgba(255,255,255,.6); border: 1px solid var(--brd);
+  border-radius: 12px; padding: 1rem 1.1rem; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95rem; }
+.note-body:focus { outline: none; border-color: var(--accent); }
+#viewtitle { margin: .2rem 0 1rem; }
+.note-editor.viewing .noview { display: none !important; }
+.note-editor:not(.viewing) .view-only { display: none !important; }
 .sum-ta, .tw-ta { width: 100%; box-sizing: border-box; font: inherit; color: var(--ink);
   background: rgba(255,255,255,.65); border: 1px solid var(--brd); border-radius: 12px;
   padding: .6rem .7rem; resize: vertical; overflow: hidden; line-height: 1.55; }
@@ -2427,6 +2586,84 @@ const REVIEW_JS: &str = r#"
 
 /// 나만의 문법책: 항목별 '질문' 버튼 → /book/:id/ask로 답을 받아 보여주고, '노트에 추가'로
 /// textarea에 Q&A를 붙인다(그 뒤 '노트 저장'으로 서버에 저장).
+/// 문법 노트 편집기: 마크다운 툴바(선택 영역 서식/줄머리 삽입), 편집↔뷰어 토글
+/// (뷰어는 /notes/render로 서버 렌더), AJAX 저장(Ctrl/Cmd+S 지원), 변경 감지.
+const NOTE_JS: &str = r#"
+(function(){
+  var root=document.querySelector('.note-editor'); if(!root) return;
+  var id=root.dataset.id;
+  var ta=document.getElementById('notebody'),
+      view=document.getElementById('noteview'),
+      vtitle=document.getElementById('viewtitle'),
+      title=document.getElementById('notetitle'),
+      editBtn=document.getElementById('editbtn'),
+      viewBtn=document.getElementById('viewbtn'),
+      saveBtn=document.getElementById('savebtn'),
+      state=document.getElementById('savestate');
+  var dirty=false;
+  function mark(){ dirty=true; state.textContent='● 저장 안 됨'; }
+  ta.addEventListener('input', mark);
+  title.addEventListener('input', mark);
+
+  function save(){
+    saveBtn.disabled=true; state.textContent='저장 중…';
+    return fetch('/notes/'+id+'/save', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'title='+encodeURIComponent(title.value)+'&body='+encodeURIComponent(ta.value)})
+      .then(function(r){ if(!r.ok) throw 0; dirty=false; state.textContent='저장됨 ✓'; document.title=title.value||'노트'; })
+      .catch(function(){ state.textContent='저장 실패 — 다시 시도'; })
+      .then(function(){ saveBtn.disabled=false; });
+  }
+  saveBtn.addEventListener('click', save);
+
+  function showEdit(){
+    root.classList.remove('viewing');
+    editBtn.classList.add('active'); viewBtn.classList.remove('active');
+  }
+  function renderView(){
+    vtitle.textContent = title.value || '제목 없는 노트';
+    return fetch('/notes/render', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'md='+encodeURIComponent(ta.value)})
+      .then(function(r){ return r.text(); })
+      .then(function(h){ view.innerHTML = h || '<p class="muted">(내용이 비어 있어요)</p>'; })
+      .catch(function(){ view.innerHTML='<p class="muted">미리보기를 불러오지 못했어요.</p>'; });
+  }
+  function showView(){
+    renderView();
+    root.classList.add('viewing');
+    viewBtn.classList.add('active'); editBtn.classList.remove('active');
+  }
+  editBtn.addEventListener('click', showEdit);
+  viewBtn.addEventListener('click', function(){ if(dirty){ save().then(showView); } else { showView(); } });
+
+  // 마크다운 툴바: 선택 영역 감싸기 / 줄머리 삽입
+  function surround(before, after){
+    var s=ta.selectionStart, e=ta.selectionEnd, v=ta.value, sel=v.slice(s,e);
+    ta.value = v.slice(0,s)+before+sel+after+v.slice(e);
+    ta.focus(); ta.selectionStart=s+before.length; ta.selectionEnd=e+before.length; mark();
+  }
+  function linePrefix(prefix){
+    var s=ta.selectionStart, v=ta.value, ls=v.lastIndexOf('\n', s-1)+1;
+    ta.value = v.slice(0,ls)+prefix+v.slice(ls);
+    ta.focus(); ta.selectionStart=ta.selectionEnd=s+prefix.length; mark();
+  }
+  document.querySelectorAll('.md-toolbar button').forEach(function(b){
+    b.addEventListener('click', function(){
+      var k=b.dataset.md;
+      if(k==='bold') surround('**','**');
+      else if(k==='italic') surround('*','*');
+      else if(k==='code') surround('`','`');
+      else if(k==='h2') linePrefix('## ');
+      else if(k==='ul') linePrefix('- ');
+      else if(k==='quote') linePrefix('> ');
+    });
+  });
+
+  document.addEventListener('keydown', function(e){
+    if((e.ctrlKey||e.metaKey) && (e.key==='s'||e.key==='S')){ e.preventDefault(); save(); }
+  });
+})();
+"#;
+
 const BOOK_JS: &str = r#"
 (function(){
   document.querySelectorAll('.ask-btn').forEach(function(btn){
