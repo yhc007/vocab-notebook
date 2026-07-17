@@ -482,9 +482,13 @@ impl Db {
         let mut out: Vec<(Uuid, String, String, String, i64)> = rows(&v)
             .iter()
             .filter_map(|r| {
+                let sentence = text(r, "sentence");
+                if sentence.trim().is_empty() {
+                    return None; // 소프트 삭제된(빈 문장) 행은 제외
+                }
                 Some((
                     uuid_col(r, "id")?,
-                    text(r, "sentence"),
+                    sentence,
                     text(r, "note"),
                     text(r, "source"),
                     ts_col(r, "created_at").unwrap_or(0),
@@ -533,10 +537,15 @@ impl Db {
         Ok(())
     }
 
-    /// 항목 삭제(단일 PK라 실제로 지워진다).
+    /// 항목 삭제. CoreDB는 DELETE가 success여도 실제로 안 지우므로(기사 삭제도 tombstone 사용),
+    /// 빈 문장으로 덮어써(upsert) 목록에서 제외한다(list_book이 빈 문장 행을 거른다).
     pub async fn delete_book_item(&self, id: Uuid) -> Result<()> {
-        self.exec(&format!("DELETE FROM vocab.grammar_book WHERE id = {id}"))
-            .await?;
+        let now = Utc::now().timestamp_millis();
+        self.exec(&format!(
+            "INSERT INTO vocab.grammar_book (id, sentence, note, source, created_at) \
+             VALUES ({id}, '', '', '', {now})"
+        ))
+        .await?;
         Ok(())
     }
 

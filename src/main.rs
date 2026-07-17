@@ -1014,11 +1014,13 @@ async fn print_book(State(st): State<AppState>) -> Result<Html<String>, AppError
         "{}<h1>📘 나만의 문법책</h1>\
          <div class=\"toolbar noprint\">\
            <a class=\"chip\" href=\"/book\">← 문법책</a>\
-           <span class=\"muted\">{n}개 항목</span>\
-           <button id=\"printbtn\" onclick=\"window.print()\">🖨 PDF로 저장 / 인쇄</button>\
-         </div>",
+           <button type=\"button\" class=\"chip\" id=\"selall\">전체 선택</button>\
+           <button type=\"button\" class=\"chip\" id=\"selnone\">전체 해제</button>\
+           <span id=\"prog\"></span>\
+           <button id=\"printbtn\">🖨 선택 항목 인쇄</button>\
+         </div>\
+         <p class=\"noprint muted pick-hint\">체크한 항목만 인쇄됩니다.</p>",
         nav("book"),
-        n = items.len(),
     );
     if items.is_empty() {
         body.push_str("<p class=\"empty\">인쇄할 항목이 없습니다.</p>");
@@ -1032,7 +1034,7 @@ async fn print_book(State(st): State<AppState>) -> Result<Html<String>, AppError
             };
             body.push_str(&format!(
                 "<section class=\"book-print-item\">\
-                   <div class=\"bp-src\">{src} · {time}</div>\
+                   <div class=\"bp-src\"><label class=\"pick noprint\"><input type=\"checkbox\" class=\"pickbox\" checked></label> {src} · {time}</div>\
                    <blockquote class=\"sentence\">{sentence}</blockquote>\
                    {note_html}\
                  </section>",
@@ -1042,6 +1044,7 @@ async fn print_book(State(st): State<AppState>) -> Result<Html<String>, AppError
             ));
         }
         body.push_str("</div>");
+        body.push_str(&format!("<script>{BOOK_PRINT_JS}</script>"));
     }
     Ok(page("문법책 인쇄", &body))
 }
@@ -2078,7 +2081,7 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 
 @media print {
   nav, .toolbar, .noprint, .filter, .export { display: none !important; }
-  .print-words li.unsel, .print-sents li.unsel { display: none !important; }
+  .print-words li.unsel, .print-sents li.unsel, .book-print-item.unsel { display: none !important; }
   html, body { background: #fff !important; color: #000 !important; }
   body::before { display: none !important; }
   /* 문법책 인쇄: 노트(md-view) 배경/테두리 제거해 깔끔하게 */
@@ -2178,6 +2181,7 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
   background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 10px; padding: .3rem .7rem; }
 /* 문법책 인쇄 */
 .book-print-item { break-inside: avoid; margin: 0 0 1.4rem; padding-bottom: 1rem; border-bottom: 1px solid var(--brd); }
+.book-print-item.unsel { opacity: .4; }
 .bp-src { color: var(--muted); font-size: .82rem; font-weight: 600; margin-bottom: .3rem; }
 .book-print-item .sentence { margin-bottom: .5rem; }
 /* 읽기 멈춤/이어 읽기 플로팅 버튼(스크롤해도 우하단 고정) */
@@ -2444,6 +2448,23 @@ const BOOK_JS: &str = r#"
         .then(function(){ btn.disabled=false; });
     });
   });
+})();
+"#;
+
+/// 문법책 인쇄: 항목별 체크박스로 선택, 전체 선택/해제, 선택 항목만 인쇄.
+const BOOK_PRINT_JS: &str = r#"
+(function(){
+  var items=Array.prototype.slice.call(document.querySelectorAll('.book-print-item'));
+  var prog=document.getElementById('prog'), btn=document.getElementById('printbtn');
+  var selall=document.getElementById('selall'), selnone=document.getElementById('selnone');
+  function selected(){ return items.filter(function(x){ return !x.classList.contains('unsel'); }); }
+  function upd(){ if(prog) prog.textContent=selected().length+' / '+items.length+' 선택'; }
+  items.forEach(function(it){ var cb=it.querySelector('.pickbox'); if(!cb) return; cb.addEventListener('change', function(){ it.classList.toggle('unsel', !cb.checked); upd(); }); });
+  function setAll(on){ items.forEach(function(it){ var cb=it.querySelector('.pickbox'); if(cb) cb.checked=on; it.classList.toggle('unsel', !on); }); upd(); }
+  if(selall) selall.addEventListener('click', function(){ setAll(true); });
+  if(selnone) selnone.addEventListener('click', function(){ setAll(false); });
+  if(btn) btn.addEventListener('click', function(){ if(selected().length===0){ alert('선택된 항목이 없습니다.'); return; } setTimeout(function(){ window.print(); }, 30); });
+  upd();
 })();
 "#;
 
