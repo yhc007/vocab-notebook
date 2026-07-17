@@ -3062,7 +3062,9 @@ const READER_JS: &str = r#"
 
   // ---- 속도 읽기: 토익 점수대 WPM으로 하이라이트만 진행(음성 없음) ----
   function curWpm(){ return (toeicSel && parseInt(toeicSel.value,10)) || 140; }
-  function stopPace(){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; if(pacebtn) pacebtn.textContent='🏃 속도 읽기'; }
+  // 완전 정지(모드 전환·읽어주기·완료 시): 상태 초기화해 다음엔 현재 뷰로 새로 시작한다.
+  // (일시정지는 pacebtn 핸들러에서 인라인으로 처리 — paceList/paceIdx 유지해 이어 읽기 가능)
+  function stopPace(){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; paceList=[]; paceIdx=0; if(pacebtn) pacebtn.textContent='🏃 속도 읽기'; }
   // 일반 모드용: 원문을 문장 span으로 렌더(어휘 밑줄 포함).
   function renderTextSentences(){
     var raw=ta?ta.value:''; var art=document.createElement('article'); art.className='reader';
