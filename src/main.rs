@@ -3049,6 +3049,7 @@ const SENTENCE_GRAPH_JS: &str = r#"
   function hide(){ if(modal){ modal.hidden=true; document.body.style.overflow=''; } }
 
   document.querySelectorAll('.gram-btn').forEach(function(btn){
+    if(btn.closest('.addbook')) return; // 문법책 추가 버튼은 폼 제출용 → 가로채지 않음
     btn.addEventListener('click', function(){
       var card=btn.closest('.card'); var holder=card.querySelector('.gram');
       var sentence=holder ? holder.dataset.text : '';
