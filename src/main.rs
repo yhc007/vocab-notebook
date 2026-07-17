@@ -344,6 +344,13 @@ async fn entry_detail(
         body.push_str(
             "<audio id=\"ttsaudio\" class=\"tts-audio noprint\" controls hidden preload=\"none\"></audio>",
         );
+        // read-along 문장 안에서도 어휘 밑줄을 다시 그리도록 vocab 맵(소문자 변형 키→뜻)을 실어보낸다.
+        let vjson = serde_json::to_string(&vocab)
+            .unwrap_or_else(|_| "{}".into())
+            .replace('<', "\\u003c");
+        body.push_str(&format!(
+            "<script id=\"tts-vocab\" type=\"application/json\">{vjson}</script>"
+        ));
     }
     if !vocab.is_empty() {
         body.push_str(
@@ -2905,9 +2912,29 @@ const TTS_JS: &str = r#"
   var readerView=document.getElementById('reader-view');
   var entry=btn.dataset.entry;
   var fetched=false, readOn=false, origHTML='', sents=[], spans=[], cur=-1;
+  var vocab={}; try { var vn=document.getElementById('tts-vocab'); if(vn) vocab=JSON.parse(vn.textContent||'{}'); } catch(e){}
 
   function applyRate(){ if(rate) audio.playbackRate=parseFloat(rate.value)||1; }
   function b64ToBlob(b64,type){ var bin=atob(b64),n=bin.length,a=new Uint8Array(n); for(var i=0;i<n;i++)a[i]=bin.charCodeAt(i); return new Blob([a],{type:type}); }
+  // 단어 문자(알파벳 + 아포스트로피). 서버 is_token_char와 동일 기준.
+  function isTok(ch){ return /[\p{L}'’]/u.test(ch); }
+  // 문장 텍스트를 토큰 단위로 채우되, vocab에 있으면 <mark class="vocab">로 밑줄.
+  function fillSentence(span, text){
+    var i=0, n=text.length;
+    while(i<n){
+      var j=i;
+      if(isTok(text[i])){
+        while(j<n && isTok(text[j])) j++;
+        var w=text.slice(i,j), def=vocab[w.toLowerCase()];
+        if(def){ var m=document.createElement('mark'); m.className='vocab'; m.setAttribute('data-def',def); m.textContent=w; span.appendChild(m); }
+        else span.appendChild(document.createTextNode(w));
+      } else {
+        while(j<n && !isTok(text[j])) j++;
+        span.appendChild(document.createTextNode(text.slice(i,j)));
+      }
+      i=j;
+    }
+  }
   // 문자열을 문장 단위로 나눠 각 문장의 시작/끝 시각(초)을 구한다.
   function buildSentences(chars,starts,ends){
     var out=[], st=-1;
@@ -2926,7 +2953,7 @@ const TTS_JS: &str = r#"
     if(readOn) return;
     origHTML=readerView.innerHTML;
     var art=document.createElement('article'); art.className='reader tts-readalong';
-    sents.forEach(function(s){ var sp=document.createElement('span'); sp.className='tts-sent'; sp.textContent=s.text; art.appendChild(sp); });
+    sents.forEach(function(s){ var sp=document.createElement('span'); sp.className='tts-sent'; fillSentence(sp, s.text); art.appendChild(sp); });
     readerView.innerHTML=''; readerView.appendChild(art);
     spans=Array.prototype.slice.call(art.querySelectorAll('.tts-sent'));
     readOn=true; cur=-1;
