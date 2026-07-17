@@ -340,6 +340,15 @@ async fn entry_detail(
     body.push_str(&format!(
         "<div class=\"reader-head\"><h2>📖 기사 읽기</h2>{tts_ctrl}\
          <button type=\"button\" id=\"chunkbtn\" class=\"edit-toggle\" data-entry=\"{id}\" title=\"의미 단위(구)로 끊어 계단식으로 보기\">🧩 청크 리딩</button>\
+         <select id=\"toeic\" class=\"edit-toggle\" title=\"토익 점수대 = 읽기 속도(WPM)\">\
+           <option value=\"100\">TOEIC ~400 · 100 WPM</option>\
+           <option value=\"130\">TOEIC 500 · 130 WPM</option>\
+           <option value=\"150\" selected>TOEIC 600 · 150 WPM</option>\
+           <option value=\"170\">TOEIC 700 · 170 WPM</option>\
+           <option value=\"190\">TOEIC 800 · 190 WPM</option>\
+           <option value=\"220\">TOEIC 900+ · 220 WPM</option>\
+         </select>\
+         <button type=\"button\" id=\"pacebtn\" class=\"edit-toggle\" title=\"선택 속도로 하이라이트만 진행(음성 없음)\">🏃 속도 읽기</button>\
          <button type=\"button\" id=\"editbtn\" class=\"edit-toggle\">✏️ 편집</button></div>"
     ));
     // 청크 리딩/read-along에서 어휘 밑줄을 다시 그리도록 vocab 맵(소문자 변형 키→뜻)을 실어보낸다.
@@ -2960,9 +2969,15 @@ const READER_JS: &str = r#"
   var audio=document.getElementById('ttsaudio');
   var rate=document.getElementById('ttsrate');
   var ta=document.querySelector('#reader-edit textarea');
+  var pacebtn=document.getElementById('pacebtn');
+  var toeicSel=document.getElementById('toeic');
   var vocab={}; try{ var vn=document.getElementById('reader-vocab'); if(vn) vocab=JSON.parse(vn.textContent||'{}'); }catch(e){}
   var baseHTML=readerView.innerHTML;
   var chunkOn=false, align=null, audioReady=false, units=[], cur=-1;
+  var paceOn=false, paceIdx=0, paceTimer=null, paceList=[];
+  // 토익 선택 기억(다른 기사에서도 유지).
+  try{ var sv=localStorage.getItem('toeicWpm'); if(sv&&toeicSel) toeicSel.value=sv; }catch(e){}
+  if(toeicSel) toeicSel.addEventListener('change', function(){ try{ localStorage.setItem('toeicWpm', toeicSel.value); }catch(e){} });
 
   var FN={}, TRIG={};
   ("a an the of to in on at for with from by as into onto about over under above below after before between through during without within is are was were be been being am do does did have has had will would can could may might must shall should and or but nor so yet not no than then there here it its his her their our your my we you they them").split(' ').forEach(function(w){ FN[w]=1; });
@@ -3012,6 +3027,7 @@ const READER_JS: &str = r#"
       .catch(function(){ readerView.innerHTML=''; readerView.appendChild(buildRule()); })
       .then(function(){ if(cb)cb(); }); }
   if(chunkBtn) chunkBtn.addEventListener('click', function(){
+    stopPace();
     if(chunkOn){ chunkOn=false; chunkBtn.textContent='🧩 청크 리딩';
       if(audio && audioActive()){ renderSentences(); if(!audio.paused) highlight(audio.currentTime); }
       else { readerView.innerHTML=baseHTML; units=[]; cur=-1; }
@@ -3028,6 +3044,7 @@ const READER_JS: &str = r#"
     audio.addEventListener('pause', function(){ if(!audio.ended) ttsBtn.textContent='▶ 이어 듣기'; });
     audio.addEventListener('ended', function(){ ttsBtn.textContent='🔊 다시 듣기'; if(chunkOn){ units.forEach(function(u){ u.el.classList.remove('chunk-on'); }); cur=-1; } else { readerView.innerHTML=baseHTML; units=[]; cur=-1; } });
     ttsBtn.addEventListener('click', function(){
+      stopPace();
       if(!audioReady){
         ttsBtn.disabled=true; ttsBtn.textContent='🔊 생성 중…';
         fetch('/entries/'+ttsBtn.dataset.entry+'/tts').then(function(r){ if(!r.ok)throw 0; return r.json(); })
@@ -3042,6 +3059,38 @@ const READER_JS: &str = r#"
     });
     if(rate) rate.addEventListener('change', applyRate);
   }
+
+  // ---- 속도 읽기: 토익 점수대 WPM으로 하이라이트만 진행(음성 없음) ----
+  function curWpm(){ return (toeicSel && parseInt(toeicSel.value,10)) || 150; }
+  function stopPace(){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; if(pacebtn) pacebtn.textContent='🏃 속도 읽기'; }
+  // 일반 모드용: 원문을 문장 span으로 렌더(어휘 밑줄 포함).
+  function renderTextSentences(){
+    var raw=ta?ta.value:''; var art=document.createElement('article'); art.className='reader';
+    raw.replace(/\r/g,'').split(/\n\n+/).forEach(function(p){ p=p.replace(/\n/g,' ').trim(); if(!p)return; var pp=document.createElement('p'); pp.className='para';
+      splitSents(p).forEach(function(s){ var sp=document.createElement('span'); sp.className='tts-sent'; fillTokens(sp, tokenize(s)); pp.appendChild(sp); pp.appendChild(document.createTextNode(' ')); }); art.appendChild(pp); });
+    readerView.innerHTML=''; readerView.appendChild(art);
+  }
+  function paceStep(){
+    if(!paceOn) return;
+    if(paceIdx>=paceList.length){ stopPace(); return; }
+    var cls=chunkOn?'chunk-on':'tts-on';
+    paceList.forEach(function(u,k){ u.el.classList.toggle(cls, k===paceIdx); });
+    paceList[paceIdx].el.scrollIntoView({block:'center',behavior:'smooth'});
+    var dur=Math.max(300, paceList[paceIdx].words/curWpm()*60000); // 단어수/WPM
+    paceTimer=setTimeout(function(){ paceIdx++; paceStep(); }, dur);
+  }
+  function startPace(){
+    if(audio && !audio.paused) audio.pause();
+    if(!chunkOn) renderTextSentences(); // 일반 모드면 문장 span 뷰로
+    var els=readerView.querySelectorAll(chunkOn?'.chunk-line':'.tts-sent');
+    paceList=Array.prototype.slice.call(els).map(function(el){ return {el:el, words:(el.textContent.trim().match(/\S+/g)||[]).length||1}; });
+    paceIdx=0; paceOn=true; if(pacebtn) pacebtn.textContent='⏸ 멈춤'; paceStep();
+  }
+  if(pacebtn) pacebtn.addEventListener('click', function(){
+    if(paceOn){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; pacebtn.textContent='▶ 이어 읽기'; return; }
+    if(paceList.length && paceIdx>0 && paceIdx<paceList.length){ paceOn=true; pacebtn.textContent='⏸ 멈춤'; paceStep(); return; }
+    startPace();
+  });
 })();
 "#;
 
