@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/sentences/grammar", get(sentence_grammar))
         .route("/sentences/point", get(sentence_point))
         .route("/book", get(book_page))
+        .route("/book/print", get(print_book))
         .route("/book/add", post(book_add))
         .route("/book/:id/note", post(book_note))
         .route("/book/:id/delete", post(book_delete))
@@ -971,6 +972,9 @@ async fn book_page(State(st): State<AppState>) -> Result<Html<String>, AppError>
     let items = st.db.list_book().await.map_err(AppError::from)?;
     let mut body = format!("{}<h1>📘 나만의 문법책</h1>", nav("book"));
     body.push_str("<p class=\"reader-hint\">베스트 문장을 담아 내 노트로 정리하고, 궁금한 건 🤖 질문해 노트에 붙이세요.</p>");
+    if !items.is_empty() {
+        body.push_str("<div class=\"export\"><a href=\"/book/print\">🖨 PDF 인쇄</a></div>");
+    }
     if items.is_empty() {
         body.push_str("<p class=\"empty\">아직 비어 있어요. <a href=\"/sentences\">베스트 문장</a>에서 ‘📘 문법책에 추가’로 담아 보세요.</p>");
     } else {
@@ -1001,6 +1005,45 @@ async fn book_page(State(st): State<AppState>) -> Result<Html<String>, AppError>
         body.push_str(&format!("<script>{BOOK_JS}</script>"));
     }
     Ok(page("나만의 문법책", &body))
+}
+
+/// 문법책 인쇄(PDF) 뷰: 각 항목의 문장 + 내 노트(마크다운 렌더)를 책처럼 배치. 컨트롤 없음.
+async fn print_book(State(st): State<AppState>) -> Result<Html<String>, AppError> {
+    let items = st.db.list_book().await.map_err(AppError::from)?;
+    let mut body = format!(
+        "{}<h1>📘 나만의 문법책</h1>\
+         <div class=\"toolbar noprint\">\
+           <a class=\"chip\" href=\"/book\">← 문법책</a>\
+           <span class=\"muted\">{n}개 항목</span>\
+           <button id=\"printbtn\" onclick=\"window.print()\">🖨 PDF로 저장 / 인쇄</button>\
+         </div>",
+        nav("book"),
+        n = items.len(),
+    );
+    if items.is_empty() {
+        body.push_str("<p class=\"empty\">인쇄할 항목이 없습니다.</p>");
+    } else {
+        body.push_str("<div class=\"book-print\">");
+        for (_id, sentence, note, source, ts) in &items {
+            let note_html = if note.trim().is_empty() {
+                "<p class=\"muted\">(노트 없음)</p>".to_string()
+            } else {
+                format!("<div class=\"md-view\">{}</div>", md_to_html(note))
+            };
+            body.push_str(&format!(
+                "<section class=\"book-print-item\">\
+                   <div class=\"bp-src\">{src} · {time}</div>\
+                   <blockquote class=\"sentence\">{sentence}</blockquote>\
+                   {note_html}\
+                 </section>",
+                src = esc(if source.is_empty() { "직접 추가" } else { source }),
+                time = esc(&fmt_date(*ts)),
+                sentence = esc(sentence),
+            ));
+        }
+        body.push_str("</div>");
+    }
+    Ok(page("문법책 인쇄", &body))
 }
 
 /// 베스트 문장을 문법책에 담는다(sentence + source).
@@ -2038,6 +2081,9 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
   .print-words li.unsel, .print-sents li.unsel { display: none !important; }
   html, body { background: #fff !important; color: #000 !important; }
   body::before { display: none !important; }
+  /* 문법책 인쇄: 노트(md-view) 배경/테두리 제거해 깔끔하게 */
+  .book-print .md-view { background: #fff !important; border: 0 !important; padding: 0 !important; }
+  .book-print-item { border-bottom: 1px solid #ccc !important; }
   .wrap { max-width: none; margin: 0; padding: 0; }
   h1 { font-size: 12pt; margin: 0 0 6pt; color: #000; }
   .print-words { columns: 2; column-gap: 8mm; font-size: 7.5pt; line-height: 1.32; }
@@ -2130,6 +2176,10 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
   border-radius: 12px; padding: .6rem .8rem; line-height: 1.6; }
 .ask-add { margin-top: .4rem; cursor: pointer; font-weight: 600; font-size: .82rem; color: var(--accent);
   background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 10px; padding: .3rem .7rem; }
+/* 문법책 인쇄 */
+.book-print-item { break-inside: avoid; margin: 0 0 1.4rem; padding-bottom: 1rem; border-bottom: 1px solid var(--brd); }
+.bp-src { color: var(--muted); font-size: .82rem; font-weight: 600; margin-bottom: .3rem; }
+.book-print-item .sentence { margin-bottom: .5rem; }
 /* 읽기 멈춤/이어 읽기 플로팅 버튼(스크롤해도 우하단 고정) */
 .reader-fab { position: fixed; right: 1.2rem; bottom: 1.2rem; z-index: 900;
   width: 3.4rem; height: 3.4rem; border-radius: 50%; border: none; cursor: pointer;
