@@ -1993,6 +1993,15 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .chunk-line { padding: .06rem 0; }
 .chunk-sub { margin-left: 1.7rem; }
 .fn-word { opacity: .42; }
+/* 읽던 곳 🔖 리본(우측 가장자리 마커) + 이어 읽기 칩 */
+.read-ribbon { position: fixed; right: .1rem; z-index: 890; transform: translateY(-50%);
+  cursor: pointer; border: 0; background: transparent; padding: .1rem; font-size: 1.35rem; line-height: 1;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,.35)); }
+.read-ribbon:hover { transform: translateY(-50%) scale(1.12); }
+.resume-chip { display: inline-flex; align-items: center; gap: .3rem; cursor: pointer; margin: 0 0 .7rem;
+  font-weight: 600; font-size: .9rem; color: #fff; border: 0; border-radius: 999px; padding: .45rem 1rem;
+  background: linear-gradient(135deg, var(--accent), var(--accent2)); box-shadow: 0 4px 14px rgba(10,132,255,.32); }
+.resume-chip:hover { transform: translateY(-1px); }
 /* 읽기 멈춤/이어 읽기 플로팅 버튼(스크롤해도 우하단 고정) */
 .reader-fab { position: fixed; right: 1.2rem; bottom: 1.2rem; z-index: 900;
   width: 3.4rem; height: 3.4rem; border-radius: 50%; border: none; cursor: pointer;
@@ -3033,6 +3042,26 @@ const READER_JS: &str = r#"
     toolsbtn.addEventListener('click', function(e){ e.stopPropagation(); toolsmenu.hidden=!toolsmenu.hidden; });
     toolsmenu.addEventListener('click', function(e){ if(e.target.tagName==='BUTTON') toolsmenu.hidden=true; });
     document.addEventListener('click', function(e){ if(!toolsmenu.hidden && e.target!==toolsbtn && !toolsmenu.contains(e.target)) toolsmenu.hidden=true; });
+  }
+
+  // ---- 읽던 곳 🔖 리본(스크롤 위치를 비율로 저장/복원; 문단 구조·뷰 모드와 무관하게 견고) ----
+  var entryId=(chunkBtn&&chunkBtn.dataset.entry)||(ttsBtn&&ttsBtn.dataset.entry)||'';
+  var RPKEY='rp_'+entryId;
+  function scrollMax(){ return Math.max(1, (document.documentElement.scrollHeight||document.body.scrollHeight) - window.innerHeight); }
+  function readRatio(){ try{ var v=parseFloat(localStorage.getItem(RPKEY)); return isNaN(v)?0:v; }catch(e){ return 0; } }
+  if(entryId){
+    var rpTimer;
+    window.addEventListener('scroll', function(){ clearTimeout(rpTimer); rpTimer=setTimeout(function(){ try{ localStorage.setItem(RPKEY,(window.scrollY/scrollMax()).toFixed(4)); }catch(e){} }, 500); }, {passive:true});
+    var ratio=readRatio();
+    if(ratio>0.03){
+      var goto=function(){ window.scrollTo({top: ratio*scrollMax(), behavior:'smooth'}); };
+      // 오른쪽 가장자리 🔖 마커(문서 상 위치를 스크롤바 북마크처럼 표시, 클릭 시 이동).
+      var mk=document.createElement('button'); mk.className='read-ribbon'; mk.textContent='🔖'; mk.title='읽던 곳으로';
+      mk.style.top=(6+ratio*84)+'vh'; mk.onclick=goto; document.body.appendChild(mk);
+      // 상단 이어 읽기 칩(일회성).
+      var chip=document.createElement('button'); chip.className='resume-chip'; chip.textContent='🔖 읽던 곳부터 이어 읽기';
+      chip.onclick=function(){ goto(); chip.remove(); }; if(readerView.parentNode) readerView.parentNode.insertBefore(chip, readerView);
+    }
   }
 
   var FN={}, TRIG={};
