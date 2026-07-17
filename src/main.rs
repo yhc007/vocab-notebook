@@ -1274,28 +1274,28 @@ async fn entry_tts(
         return Err(AppError("읽을 본문이 없습니다".into()));
     }
 
-    // 디스크 캐시: <dir>/<id>-<voice-model>-<본문해시>.mp3
+    // 디스크 캐시: <dir>/<id>-<voice-model>-<본문해시>.json (audio_base64 + 타임스탬프)
     let dir = std::env::var("TTS_CACHE_DIR").unwrap_or_else(|_| "tts-cache".into());
-    let fname = format!("{}-{}-{:016x}.mp3", id, tts.cache_tag(), fnv1a(&text));
+    let fname = format!("{}-{}-{:016x}.json", id, tts.cache_tag(), fnv1a(&text));
     let path = std::path::Path::new(&dir).join(fname);
 
-    let audio = if let Ok(bytes) = tokio::fs::read(&path).await {
-        bytes
+    let json = if let Ok(s) = tokio::fs::read_to_string(&path).await {
+        s
     } else {
-        let bytes = tts.synthesize(&text).await.map_err(AppError::from)?;
+        let s = tts.synthesize_json(&text).await.map_err(AppError::from)?;
         let _ = tokio::fs::create_dir_all(&dir).await;
-        if let Err(e) = tokio::fs::write(&path, &bytes).await {
+        if let Err(e) = tokio::fs::write(&path, &s).await {
             tracing::warn!("TTS 캐시 저장 실패(무시): {e}");
         }
-        bytes
+        s
     };
 
     Ok((
         [
-            (header::CONTENT_TYPE, "audio/mpeg"),
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
             (header::CACHE_CONTROL, "private, max-age=86400"),
         ],
-        audio,
+        json,
     ))
 }
 
@@ -1914,6 +1914,10 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .reader-head h2 { margin-right: auto; }
 .tts-audio { width: 100%; margin: .35rem 0 .8rem; }
 #ttsrate.edit-toggle { padding: .3rem .5rem; cursor: pointer; }
+.tts-readalong { white-space: pre-wrap; }
+.tts-sent { border-radius: 5px; transition: background .12s; }
+.tts-on { background: rgba(10,132,255,.16); box-shadow: 0 0 0 3px rgba(10,132,255,.16); }
+@media (prefers-color-scheme: dark) { .tts-on { background: rgba(100,180,255,.22); box-shadow: 0 0 0 3px rgba(100,180,255,.22); } }
 .edit-toggle, .ghost { cursor: pointer; font-weight: 600; font-size: .85rem; color: var(--accent);
   background: rgba(255,255,255,.6); border: 1px solid var(--brd); border-radius: 10px; padding: .35rem .8rem; }
 .edit-toggle:hover, .ghost:hover { background: #fff; }
@@ -2890,25 +2894,75 @@ const READER_EDIT_JS: &str = r#"
 })();
 "#;
 
-/// 기사 읽어주기(ElevenLabs): 버튼 클릭 → /entries/:id/tts(mp3)를 오디오로 재생.
-/// 첫 클릭은 생성(느릴 수 있음), 이후엔 재생/일시정지 토글. 속도(select)는 즉시 반영.
+/// 기사 읽어주기(ElevenLabs, 타임스탬프): 버튼 클릭 → /entries/:id/tts(JSON: audio_base64 +
+/// 문자별 시각)를 받아 재생하고, 재생 위치에 맞춰 '읽는 문장'을 하이라이트·자동 스크롤한다.
+/// 재생 중에는 리더를 read-along(문장 span)으로 바꾸고, 끝나면 원래 리더(어휘 밑줄)로 복원.
 const TTS_JS: &str = r#"
 (function(){
   var btn=document.getElementById('ttsbtn'); if(!btn) return;
   var audio=document.getElementById('ttsaudio');
   var rate=document.getElementById('ttsrate');
-  var entry=btn.dataset.entry, loaded=false;
+  var readerView=document.getElementById('reader-view');
+  var entry=btn.dataset.entry;
+  var fetched=false, readOn=false, origHTML='', sents=[], spans=[], cur=-1;
+
   function applyRate(){ if(rate) audio.playbackRate=parseFloat(rate.value)||1; }
-  btn.addEventListener('click', function(){
-    if(!loaded){
-      btn.disabled=true; btn.textContent='🔊 생성 중…';
-      audio.hidden=false; audio.src='/entries/'+entry+'/tts';
-      audio.play().catch(function(){});
-      audio.addEventListener('canplay', function(){ loaded=true; btn.disabled=false; btn.textContent='🔊 다시 듣기'; applyRate(); }, {once:true});
-      audio.addEventListener('error', function(){ btn.disabled=false; btn.textContent='🔊 읽어주기'; audio.hidden=true; alert('오디오를 만들지 못했어요. (키·크레딧을 확인하세요)'); }, {once:true});
-    } else {
-      if(audio.paused) audio.play(); else audio.pause();
+  function b64ToBlob(b64,type){ var bin=atob(b64),n=bin.length,a=new Uint8Array(n); for(var i=0;i<n;i++)a[i]=bin.charCodeAt(i); return new Blob([a],{type:type}); }
+  // 문자열을 문장 단위로 나눠 각 문장의 시작/끝 시각(초)을 구한다.
+  function buildSentences(chars,starts,ends){
+    var out=[], st=-1;
+    for(var i=0;i<chars.length;i++){
+      if(st<0) st=i;
+      var c=chars[i];
+      var endMark=/[.!?]/.test(c) && ((i+1>=chars.length) || /\s/.test(chars[i+1]));
+      if(endMark || c==='\n' || i===chars.length-1){
+        out.push({start:starts[st]||0, end:ends[i]||0, text:chars.slice(st,i+1).join('')});
+        st=-1;
+      }
     }
+    return out;
+  }
+  function enter(){
+    if(readOn) return;
+    origHTML=readerView.innerHTML;
+    var art=document.createElement('article'); art.className='reader tts-readalong';
+    sents.forEach(function(s){ var sp=document.createElement('span'); sp.className='tts-sent'; sp.textContent=s.text; art.appendChild(sp); });
+    readerView.innerHTML=''; readerView.appendChild(art);
+    spans=Array.prototype.slice.call(art.querySelectorAll('.tts-sent'));
+    readOn=true; cur=-1;
+  }
+  function exit(){ if(!readOn) return; readerView.innerHTML=origHTML; readOn=false; spans=[]; cur=-1; }
+  function highlight(t){
+    var idx=-1;
+    for(var k=0;k<sents.length;k++){ if(t>=sents[k].start && t<sents[k].end){ idx=k; break; } }
+    if(idx===cur) return; cur=idx;
+    for(var k=0;k<spans.length;k++) spans[k].classList.toggle('tts-on', k===idx);
+    if(idx>=0 && spans[idx]) spans[idx].scrollIntoView({block:'center', behavior:'smooth'});
+  }
+
+  audio.addEventListener('timeupdate', function(){ if(readOn) highlight(audio.currentTime); });
+  audio.addEventListener('ended', function(){ exit(); btn.textContent='🔊 다시 듣기'; });
+  audio.addEventListener('play', function(){ btn.textContent='⏸ 일시정지'; });
+  audio.addEventListener('pause', function(){ if(!audio.ended) btn.textContent='▶ 이어 듣기'; });
+
+  btn.addEventListener('click', function(){
+    if(!fetched){
+      btn.disabled=true; btn.textContent='🔊 생성 중…';
+      fetch('/entries/'+entry+'/tts')
+        .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+        .then(function(d){
+          var a=d.alignment||{};
+          sents=buildSentences(a.characters||[], a.character_start_times_seconds||[], a.character_end_times_seconds||[]);
+          audio.hidden=false;
+          audio.src=URL.createObjectURL(b64ToBlob(d.audio_base64||'', 'audio/mpeg'));
+          applyRate(); fetched=true; btn.disabled=false;
+          enter(); audio.play().catch(function(){});
+        })
+        .catch(function(){ btn.disabled=false; btn.textContent='🔊 읽어주기'; audio.hidden=true; alert('오디오를 만들지 못했어요. (키·크레딧을 확인하세요)'); });
+      return;
+    }
+    if(audio.ended){ enter(); audio.currentTime=0; audio.play(); return; }
+    if(audio.paused){ enter(); audio.play(); } else { audio.pause(); }
   });
   if(rate) rate.addEventListener('change', applyRate);
 })();

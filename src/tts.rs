@@ -35,10 +35,12 @@ impl Tts {
         format!("{}-{}", self.voice_id, self.model)
     }
 
-    /// 텍스트를 mp3 바이트로 합성한다.
-    pub async fn synthesize(&self, text: &str) -> Result<Vec<u8>> {
+    /// 타임스탬프 포함 합성. 응답 JSON(`audio_base64` + `alignment`{characters,
+    /// character_start_times_seconds, character_end_times_seconds})을 원문 그대로 돌려준다.
+    /// 클라이언트가 문자별 시각으로 읽는 문장을 하이라이트한다.
+    pub async fn synthesize_json(&self, text: &str) -> Result<String> {
         let url = format!(
-            "https://api.elevenlabs.io/v1/text-to-speech/{}",
+            "https://api.elevenlabs.io/v1/text-to-speech/{}/with-timestamps",
             self.voice_id
         );
         let body = serde_json::json!({
@@ -50,7 +52,6 @@ impl Tts {
             .http
             .post(&url)
             .header("xi-api-key", &self.api_key)
-            .header("accept", "audio/mpeg")
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -60,6 +61,6 @@ impl Tts {
             let txt = resp.text().await.unwrap_or_default();
             return Err(anyhow!("ElevenLabs error {status}: {txt}"));
         }
-        Ok(resp.bytes().await?.to_vec())
+        Ok(resp.text().await?)
     }
 }
