@@ -80,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/entries/:id", get(entry_detail))
         .route("/entries/:id/print", get(print_entry))
         .route("/entries/:id/tts", get(entry_tts))
+        .route("/entries/:id/chunks", get(entry_chunks))
         .route("/entries/:id/mindmap", get(entry_mindmap))
         .route("/entries/:id/summary", get(entry_summary))
         .route("/entries/:id/append", post(append_entry))
@@ -338,7 +339,7 @@ async fn entry_detail(
     };
     body.push_str(&format!(
         "<div class=\"reader-head\"><h2>📖 기사 읽기</h2>{tts_ctrl}\
-         <button type=\"button\" id=\"chunkbtn\" class=\"edit-toggle\" title=\"의미 단위(구)로 끊어 계단식으로 보기\">🧩 청크 리딩</button>\
+         <button type=\"button\" id=\"chunkbtn\" class=\"edit-toggle\" data-entry=\"{id}\" title=\"의미 단위(구)로 끊어 계단식으로 보기\">🧩 청크 리딩</button>\
          <button type=\"button\" id=\"editbtn\" class=\"edit-toggle\">✏️ 편집</button></div>"
     ));
     // 청크 리딩/read-along에서 어휘 밑줄을 다시 그리도록 vocab 맵(소문자 변형 키→뜻)을 실어보낸다.
@@ -1246,6 +1247,9 @@ async fn sentence_point(
 
 /// TTS 크레딧 보호용 본문 상한(글자). 넘으면 앞부분만 읽는다.
 const MAX_TTS_CHARS: usize = 8000;
+/// 청크 리딩 LLM 청킹 본문 상한(글자). 넘으면 LLM을 건너뛰고 빈 응답 → 클라이언트가 전체를
+/// 규칙 기반으로 렌더(부분 잘림 방지). 이하 기사는 chunk_article이 조각내 전체를 LLM 청킹.
+const MAX_CHUNK_CHARS: usize = 30000;
 
 /// FNV-1a 64bit(캐시 파일명용). 본문이 바뀌면 해시도 바뀌어 자동으로 새로 생성된다.
 fn fnv1a(s: &str) -> u64 {
@@ -1308,6 +1312,44 @@ async fn entry_tts(
         ],
         json,
     ))
+}
+
+/// 청크 리딩 JSON(문단별 구 단위)을 반환한다. 캐시에 있으면 즉시, 없으면 Claude로 생성 후 캐시.
+/// 크레딧/토큰 보호로 본문은 MAX_CHUNK_CHARS까지만 청킹한다(나머지는 클라이언트 규칙 기반 폴백).
+async fn entry_chunks(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    if let Some(cached) = st
+        .db
+        .get_entry_chunks(id)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Ok(json_response(cached));
+    }
+    let e = st
+        .db
+        .get_entry(id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError("기사를 찾을 수 없습니다".into()))?;
+    let full = e.raw_text.trim();
+    // 너무 긴 기사는 LLM 청킹을 건너뛰고 빈 응답 → 클라이언트가 전체를 규칙 기반으로 렌더.
+    if full.chars().count() > MAX_CHUNK_CHARS {
+        return Ok(json_response("{\"paras\":[]}".to_string()));
+    }
+    let chunks = st
+        .extractor
+        .chunk_article(full)
+        .await
+        .map_err(AppError::from)?;
+    let body = serde_json::to_string(&chunks).map_err(|e| AppError(e.to_string()))?;
+    st.db
+        .save_entry_chunks(id, &body)
+        .await
+        .map_err(AppError::from)?;
+    Ok(json_response(body))
 }
 
 /// 기사 구조 마인드맵 JSON을 반환한다. 캐시에 있으면 즉시, 없으면 Claude로 생성 후 캐시.
@@ -2918,6 +2960,7 @@ const CHUNK_JS: &str = r#"
   var btn=document.getElementById('chunkbtn'); if(!btn) return;
   var readerView=document.getElementById('reader-view');
   var ta=document.querySelector('#reader-edit textarea');
+  var entry=btn.dataset.entry;
   var vocab={}; try{ var vn=document.getElementById('reader-vocab'); if(vn) vocab=JSON.parse(vn.textContent||'{}'); }catch(e){}
   var on=false, orig='';
   var FN={}, TRIG={};
@@ -2957,9 +3000,28 @@ const CHUNK_JS: &str = r#"
     });
     return art;
   }
+  // LLM(문법 파서) 청크: 서버가 준 문단별 청크를 그대로 계단식으로 렌더.
+  function buildFromParas(paras){
+    var art=document.createElement('article'); art.className='reader chunk-view';
+    paras.forEach(function(chunks){
+      var pd=document.createElement('div'); pd.className='chunk-para';
+      chunks.forEach(function(ct){
+        var toks=tokenize(String(ct));
+        var first=(toks[0]&&toks[0].w||'').toLowerCase();
+        renderChunk(pd, toks, TRIG[first]);
+      });
+      art.appendChild(pd);
+    });
+    return art;
+  }
   btn.addEventListener('click', function(){
-    if(!on){ orig=readerView.innerHTML; readerView.innerHTML=''; readerView.appendChild(build()); on=true; btn.textContent='📖 일반 보기'; }
-    else { readerView.innerHTML=orig; on=false; btn.textContent='🧩 청크 리딩'; }
+    if(on){ readerView.innerHTML=orig; on=false; btn.textContent='🧩 청크 리딩'; return; }
+    orig=readerView.innerHTML; btn.disabled=true; btn.textContent='🧩 분석 중…';
+    fetch('/entries/'+entry+'/chunks')
+      .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+      .then(function(d){ var paras=(d&&d.paras)||[]; readerView.innerHTML=''; readerView.appendChild(paras.length?buildFromParas(paras):build()); })
+      .catch(function(){ readerView.innerHTML=''; readerView.appendChild(build()); }) // 실패 시 규칙 기반 폴백
+      .then(function(){ on=true; btn.disabled=false; btn.textContent='📖 일반 보기'; });
   });
 })();
 "#;

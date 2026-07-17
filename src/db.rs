@@ -88,6 +88,9 @@ impl Db {
             // 기사 구조 마인드맵 캐시(entry_id → 마인드맵 JSON).
             "CREATE TABLE IF NOT EXISTS vocab.entry_mindmap (\
                 entry_id uuid PRIMARY KEY, mindmap text, created_at timestamp)",
+            // 청크 리딩 캐시(entry_id → 문단별 구 단위 JSON).
+            "CREATE TABLE IF NOT EXISTS vocab.entry_chunks (\
+                entry_id uuid PRIMARY KEY, chunks text, created_at timestamp)",
             // 한글 요약 초안 캐시(entry_id → 요약 JSON: 블로그 + X 스레드).
             "CREATE TABLE IF NOT EXISTS vocab.entry_summary (\
                 entry_id uuid PRIMARY KEY, summary text, created_at timestamp)",
@@ -528,6 +531,28 @@ impl Db {
             "INSERT INTO vocab.entry_mindmap (entry_id, mindmap, created_at) \
              VALUES ({entry_id}, {}, {now})",
             cql_str(mindmap_json),
+        );
+        self.exec(&cql).await?;
+        Ok(())
+    }
+
+    /// 캐시된 청크 리딩 JSON(문단별 구 단위). 없으면 None.
+    pub async fn get_entry_chunks(&self, entry_id: Uuid) -> Result<Option<String>> {
+        let cql = format!("SELECT chunks FROM vocab.entry_chunks WHERE entry_id = {entry_id}");
+        let v = self.exec(&cql).await?;
+        Ok(rows(&v)
+            .first()
+            .map(|r| text(r, "chunks"))
+            .filter(|s| !s.is_empty()))
+    }
+
+    /// 청크 리딩 JSON을 캐시에 저장(entry_id 기준 upsert).
+    pub async fn save_entry_chunks(&self, entry_id: Uuid, chunks_json: &str) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let cql = format!(
+            "INSERT INTO vocab.entry_chunks (entry_id, chunks, created_at) \
+             VALUES ({entry_id}, {}, {now})",
+            cql_str(chunks_json),
         );
         self.exec(&cql).await?;
         Ok(())

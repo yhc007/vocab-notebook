@@ -203,6 +203,13 @@ pub struct GramExample {
     pub ko: String,
 }
 
+/// 청크 리딩용: 문단별 구 단위(청크) 목록. paras[i] = i번째 문단의 청크 문자열들(원문 순서).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkedText {
+    #[serde(default)]
+    pub paras: Vec<Vec<String>>,
+}
+
 /// 문법 포인트 상세(강의 본문): 강의체 설명 + 같은 구조의 연습 예문들.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PointDetail {

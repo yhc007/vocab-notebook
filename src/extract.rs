@@ -5,7 +5,8 @@ use anyhow::{anyhow, Result};
 use serde_json::json;
 
 use crate::models::{
-    Extraction, MindMap, PointDetail, RefinedWords, RootAnalysis, SentenceGrammar, Summary, Word,
+    ChunkedText, Extraction, MindMap, PointDetail, RefinedWords, RootAnalysis, SentenceGrammar,
+    Summary, Word,
 };
 
 /// 추출 청크 하나의 최대 문자 수(Claude 호출당 크기를 제한해 응답을 안정화).
@@ -302,6 +303,70 @@ impl Extractor {
             .map_err(|e| anyhow!("failed to parse point JSON: {e}; raw: {content}"))?;
         serde_json::from_value(v)
             .map_err(|e| anyhow!("failed to convert point JSON: {e}; raw: {content}"))
+    }
+
+    /// 긴 기사도 커버하도록 문단 경계로 쪼개(≤PIECE) 병렬 청킹한 뒤 문단 배열을 순서대로 병합.
+    /// 조각이 하나면 analyze_chunks와 동일. 조각은 CHUNK_MAX_PIECES까지만(비용 상한).
+    pub async fn chunk_article(&self, article: &str) -> Result<ChunkedText> {
+        const PIECE: usize = 5000;
+        const CHUNK_MAX_PIECES: usize = 6;
+        let mut pieces = split_chunks(article, PIECE);
+        if pieces.len() <= 1 {
+            return self.analyze_chunks(article).await;
+        }
+        if pieces.len() > CHUNK_MAX_PIECES {
+            pieces.truncate(CHUNK_MAX_PIECES);
+        }
+        // 동시성 제한 병렬 호출(원문 순서 보존).
+        let sem = Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
+        let mut set = tokio::task::JoinSet::new();
+        for (i, piece) in pieces.into_iter().enumerate() {
+            let this = self.clone();
+            let sem = sem.clone();
+            set.spawn(async move {
+                let _permit = sem.acquire_owned().await.expect("semaphore not closed");
+                (i, this.analyze_chunks(&piece).await)
+            });
+        }
+        let mut ordered: Vec<(usize, Result<ChunkedText>)> = Vec::new();
+        while let Some(res) = set.join_next().await {
+            ordered.push(res.map_err(|e| anyhow!("chunk task join error: {e}"))?);
+        }
+        ordered.sort_by_key(|(i, _)| *i);
+        let mut paras = Vec::new();
+        for (i, r) in ordered {
+            match r {
+                Ok(ct) => paras.extend(ct.paras),
+                Err(e) => tracing::warn!("청크 조각 {i} 실패(건너뜀): {e}"),
+            }
+        }
+        if paras.is_empty() {
+            return Err(anyhow!("청크 생성 결과가 없습니다"));
+        }
+        Ok(ChunkedText { paras })
+    }
+
+    /// 기사를 '청크 리딩'용으로 문단별 구/절 단위(청크)로 끊는다(구문 인식 기반, 기사당 1회).
+    /// 원문 단어는 그대로 두고 끊기만 하며, 청크를 공백으로 이으면 원문과 같아야 한다.
+    pub async fn analyze_chunks(&self, article: &str) -> Result<ChunkedText> {
+        let prompt = format!(
+            "다음 영어 글을 '청크 리딩(직독직해)'용으로 의미 단위(구/절)로 끊어라. 각 청크는 한 번에 \
+             눈에 담기는 짧은 구(주어구·동사구·전치사구·종속절·관계절 등, 보통 2~6단어).\n\
+             - 원문 단어를 절대 바꾸거나 빠뜨리지 말고 순서 그대로 두고 '끊기만' 하라. 각 청크를 \
+               공백으로 이으면 원문 문단과 정확히 같아야 한다.\n\
+             - 빈 줄로 나뉜 문단 구조를 유지(문단별 배열).\n\
+             - 문자열 안에 큰따옴표가 있으면 JSON에서 반드시 \\\" 로 이스케이프하라.\n\
+             - 반드시 아래 JSON 스키마로만 응답(추론 과정 출력 금지):\n\
+             {{\"paras\":[[\"chunk\",\"chunk\"]]}}\n\n\
+             === 본문 ===\n{body}",
+            body = article
+        );
+        let content = self.message(&prompt, 8000).await?;
+        let json_str = extract_json_block(&content);
+        let v: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| anyhow!("failed to parse chunks JSON: {e}; raw: {content}"))?;
+        serde_json::from_value(v)
+            .map_err(|e| anyhow!("failed to convert chunks JSON: {e}; raw: {content}"))
     }
 
     /// 기사 전체 구조를 마인드맵(중앙 제목 + 주요 섹션/서브헤딩 + 핵심 키워드)으로 요약.
