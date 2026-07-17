@@ -2043,6 +2043,15 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
   .mm-col.left, .mm-col.right, .mm-col.center { align-items: stretch; }
   .mm-svg { display: none; }
   .mm-branch, .mm-center { max-width: none; }
+  .wrap { padding: .8rem .8rem 5rem; }
+  /* 리더 컨트롤: 탭하기 좋게 조금 키우고 줄바꿈은 그대로 */
+  .reader-head { gap: .4rem; }
+  .reader-head h2 { font-size: 1.15rem; }
+  .reader-head .edit-toggle, .reader-head select { font-size: .9rem; padding: .45rem .7rem; }
+  /* 플로팅 버튼: 엄지로 누르기 좋게 */
+  .reader-fab { right: .9rem; bottom: .9rem; width: 3.6rem; height: 3.6rem; font-size: 1.5rem; }
+  /* 청크 계단식 들여쓰기는 좁은 화면에서 살짝 줄임 */
+  .chunk-sub { margin-left: 1.1rem; }
 }
 
 /* 한글 요약 초안(블로그·X) */
@@ -2097,10 +2106,10 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .vocab { cursor: help; position: relative; border-radius: 4px; padding: 0 1px;
   background: rgba(10,132,255,.09);
   text-decoration: underline dotted; text-decoration-color: var(--accent); text-underline-offset: 3px; }
-.vocab:hover { background: rgba(10,132,255,.2); }
-.vocab:hover::after {
+.vocab:hover, .vocab.show { background: rgba(10,132,255,.2); }
+.vocab:hover::after, .vocab.show::after {
   content: attr(data-def); position: absolute; left: 0; top: 100%; z-index: 30; margin-top: 6px;
-  width: max-content; max-width: 260px; white-space: normal; pointer-events: none;
+  width: max-content; max-width: min(260px, 78vw); white-space: normal; pointer-events: none;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: .82rem; font-style: normal;
   line-height: 1.45; color: var(--ink); background: var(--glass);
   -webkit-backdrop-filter: blur(18px) saturate(160%); backdrop-filter: blur(18px) saturate(160%);
@@ -2995,6 +3004,14 @@ const READER_JS: &str = r#"
   function readerPlaying(){ if(ttsBusy()) return !audio.paused; if(paceList.length) return paceOn; return false; }
   function refreshFab(){ var busy=ttsBusy()||paceList.length>0; fab.hidden=!busy; if(busy) fab.textContent=readerPlaying()?'⏸':'▶'; }
   fab.addEventListener('click', function(){ if(ttsBusy()){ if(ttsBtn) ttsBtn.click(); } else if(paceList.length){ if(pacebtn) pacebtn.click(); } });
+
+  // 어휘 밑줄: 터치(및 클릭)로 뜻 토글 — 모바일엔 hover가 없어서 탭으로 보이게 한다.
+  document.addEventListener('click', function(e){
+    var m=(e.target&&e.target.closest)?e.target.closest('.vocab'):null;
+    var shown=document.querySelector('.vocab.show');
+    if(shown&&shown!==m) shown.classList.remove('show');
+    if(m){ m.classList.toggle('show'); }
+  });
 
   var FN={}, TRIG={};
   ("a an the of to in on at for with from by as into onto about over under above below after before between through during without within is are was were be been being am do does did have has had will would can could may might must shall should and or but nor so yet not no than then there here it its his her their our your my we you they them").split(' ').forEach(function(w){ FN[w]=1; });
