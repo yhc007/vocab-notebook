@@ -1979,6 +1979,14 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 .chunk-line { padding: .06rem 0; }
 .chunk-sub { margin-left: 1.7rem; }
 .fn-word { opacity: .42; }
+/* 읽기 멈춤/이어 읽기 플로팅 버튼(스크롤해도 우하단 고정) */
+.reader-fab { position: fixed; right: 1.2rem; bottom: 1.2rem; z-index: 900;
+  width: 3.4rem; height: 3.4rem; border-radius: 50%; border: none; cursor: pointer;
+  font-size: 1.35rem; line-height: 1; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: 0 6px 22px rgba(10,132,255,.45); transition: transform .12s; }
+.reader-fab[hidden] { display: none; }
+.reader-fab:hover { transform: scale(1.06); }
+@media print { .reader-fab { display: none !important; } }
 .tts-sent { border-radius: 5px; transition: background .12s; }
 .tts-on, .chunk-line.chunk-on { background: rgba(10,132,255,.16); box-shadow: 0 0 0 3px rgba(10,132,255,.16); border-radius: 5px; }
 @media (prefers-color-scheme: dark) { .tts-on, .chunk-line.chunk-on { background: rgba(100,180,255,.22); box-shadow: 0 0 0 3px rgba(100,180,255,.22); } }
@@ -2979,6 +2987,15 @@ const READER_JS: &str = r#"
   try{ var sv=localStorage.getItem('toeicWpm'); if(sv&&toeicSel) toeicSel.value=sv; }catch(e){}
   if(toeicSel) toeicSel.addEventListener('change', function(){ try{ localStorage.setItem('toeicWpm', toeicSel.value); }catch(e){} });
 
+  // 플로팅 멈춤/이어 읽기 버튼(스크롤해도 항상 우하단에 뜬다). 진행 중인 읽기(속도 읽기 또는
+  // 읽어주기)가 있을 때만 보이며, 클릭하면 그 읽기의 재생/일시정지를 토글한다.
+  var fab=document.createElement('button'); fab.className='reader-fab'; fab.hidden=true;
+  fab.setAttribute('aria-label','멈춤/이어 읽기'); document.body.appendChild(fab);
+  function ttsBusy(){ return !!(audio && audioReady && !audio.ended); }
+  function readerPlaying(){ if(ttsBusy()) return !audio.paused; if(paceList.length) return paceOn; return false; }
+  function refreshFab(){ var busy=ttsBusy()||paceList.length>0; fab.hidden=!busy; if(busy) fab.textContent=readerPlaying()?'⏸':'▶'; }
+  fab.addEventListener('click', function(){ if(ttsBusy()){ if(ttsBtn) ttsBtn.click(); } else if(paceList.length){ if(pacebtn) pacebtn.click(); } });
+
   var FN={}, TRIG={};
   ("a an the of to in on at for with from by as into onto about over under above below after before between through during without within is are was were be been being am do does did have has had will would can could may might must shall should and or but nor so yet not no than then there here it its his her their our your my we you they them").split(' ').forEach(function(w){ FN[w]=1; });
   ("to of in on at for with from by as into onto about over under after before between through that which who whom whose because although though while when where if since unless and but or so yet").split(' ').forEach(function(w){ TRIG[w]=1; });
@@ -3040,9 +3057,9 @@ const READER_JS: &str = r#"
   function applyRate(){ if(rate&&audio) audio.playbackRate=parseFloat(rate.value)||1; }
   if(ttsBtn && audio){
     audio.addEventListener('timeupdate', function(){ if(units.length) highlight(audio.currentTime); });
-    audio.addEventListener('play', function(){ ttsBtn.textContent='⏸ 일시정지'; });
-    audio.addEventListener('pause', function(){ if(!audio.ended) ttsBtn.textContent='▶ 이어 듣기'; });
-    audio.addEventListener('ended', function(){ ttsBtn.textContent='🔊 다시 듣기'; if(chunkOn){ units.forEach(function(u){ u.el.classList.remove('chunk-on'); }); cur=-1; } else { readerView.innerHTML=baseHTML; units=[]; cur=-1; } });
+    audio.addEventListener('play', function(){ ttsBtn.textContent='⏸ 일시정지'; refreshFab(); });
+    audio.addEventListener('pause', function(){ if(!audio.ended) ttsBtn.textContent='▶ 이어 듣기'; refreshFab(); });
+    audio.addEventListener('ended', function(){ ttsBtn.textContent='🔊 다시 듣기'; if(chunkOn){ units.forEach(function(u){ u.el.classList.remove('chunk-on'); }); cur=-1; } else { readerView.innerHTML=baseHTML; units=[]; cur=-1; } refreshFab(); });
     ttsBtn.addEventListener('click', function(){
       stopPace();
       if(!audioReady){
@@ -3064,7 +3081,7 @@ const READER_JS: &str = r#"
   function curWpm(){ return (toeicSel && parseInt(toeicSel.value,10)) || 140; }
   // 완전 정지(모드 전환·읽어주기·완료 시): 상태 초기화해 다음엔 현재 뷰로 새로 시작한다.
   // (일시정지는 pacebtn 핸들러에서 인라인으로 처리 — paceList/paceIdx 유지해 이어 읽기 가능)
-  function stopPace(){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; paceList=[]; paceIdx=0; if(pacebtn) pacebtn.textContent='🏃 속도 읽기'; }
+  function stopPace(){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; paceList=[]; paceIdx=0; if(pacebtn) pacebtn.textContent='🏃 속도 읽기'; refreshFab(); }
   // 일반 모드용: 원문을 문장 span으로 렌더(어휘 밑줄 포함).
   function renderTextSentences(){
     var raw=ta?ta.value:''; var art=document.createElement('article'); art.className='reader';
@@ -3086,11 +3103,11 @@ const READER_JS: &str = r#"
     if(!chunkOn) renderTextSentences(); // 일반 모드면 문장 span 뷰로
     var els=readerView.querySelectorAll(chunkOn?'.chunk-line':'.tts-sent');
     paceList=Array.prototype.slice.call(els).map(function(el){ return {el:el, words:(el.textContent.trim().match(/\S+/g)||[]).length||1}; });
-    paceIdx=0; paceOn=true; if(pacebtn) pacebtn.textContent='⏸ 멈춤'; paceStep();
+    paceIdx=0; paceOn=true; if(pacebtn) pacebtn.textContent='⏸ 멈춤'; paceStep(); refreshFab();
   }
   if(pacebtn) pacebtn.addEventListener('click', function(){
-    if(paceOn){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; pacebtn.textContent='▶ 이어 읽기'; return; }
-    if(paceList.length && paceIdx>0 && paceIdx<paceList.length){ paceOn=true; pacebtn.textContent='⏸ 멈춤'; paceStep(); return; }
+    if(paceOn){ if(paceTimer){ clearTimeout(paceTimer); paceTimer=null; } paceOn=false; pacebtn.textContent='▶ 이어 읽기'; refreshFab(); return; }
+    if(paceList.length && paceIdx>0 && paceIdx<paceList.length){ paceOn=true; pacebtn.textContent='⏸ 멈춤'; paceStep(); refreshFab(); return; }
     startPace();
   });
 })();
