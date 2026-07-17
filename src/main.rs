@@ -338,18 +338,24 @@ async fn entry_detail(
         String::new()
     };
     body.push_str(&format!(
-        "<div class=\"reader-head\"><h2>📖 기사 읽기</h2>{tts_ctrl}\
-         <button type=\"button\" id=\"chunkbtn\" class=\"edit-toggle\" data-entry=\"{id}\" title=\"의미 단위(구)로 끊어 계단식으로 보기\">🧩 청크 리딩</button>\
-         <select id=\"toeic\" class=\"edit-toggle\" title=\"토익 점수대(CEFR) = 읽기 속도(WPM). 연구 규준 기반\">\
-           <option value=\"95\">TOEIC ~224 (A1) · 95 WPM</option>\
-           <option value=\"115\">TOEIC 225–549 (A2) · 115 WPM</option>\
-           <option value=\"140\" selected>TOEIC 550–784 (B1) · 140 WPM</option>\
-           <option value=\"170\">TOEIC 785–944 (B2) · 170 WPM</option>\
-           <option value=\"200\">TOEIC 945+ (C1) · 200 WPM</option>\
-           <option value=\"240\">원어민 수준 · 240 WPM</option>\
-         </select>\
-         <button type=\"button\" id=\"pacebtn\" class=\"edit-toggle\" title=\"선택 속도로 하이라이트만 진행(음성 없음)\">🏃 속도 읽기</button>\
-         <button type=\"button\" id=\"editbtn\" class=\"edit-toggle\">✏️ 편집</button></div>"
+        "<div class=\"reader-head\"><h2>📖 기사 읽기</h2>\
+         <div class=\"reader-tools\">\
+           <button type=\"button\" id=\"toolsbtn\" class=\"edit-toggle\">⚙️ 도구 ▾</button>\
+           <div id=\"toolsmenu\" class=\"reader-menu\" hidden>\
+             {tts_ctrl}\
+             <button type=\"button\" id=\"chunkbtn\" class=\"edit-toggle\" data-entry=\"{id}\" title=\"의미 단위(구)로 끊어 계단식으로 보기\">🧩 청크 리딩</button>\
+             <select id=\"toeic\" class=\"edit-toggle\" title=\"토익 점수대(CEFR) = 읽기 속도(WPM). 연구 규준 기반\">\
+               <option value=\"95\">TOEIC ~224 (A1) · 95 WPM</option>\
+               <option value=\"115\">TOEIC 225–549 (A2) · 115 WPM</option>\
+               <option value=\"140\" selected>TOEIC 550–784 (B1) · 140 WPM</option>\
+               <option value=\"170\">TOEIC 785–944 (B2) · 170 WPM</option>\
+               <option value=\"200\">TOEIC 945+ (C1) · 200 WPM</option>\
+               <option value=\"240\">원어민 수준 · 240 WPM</option>\
+             </select>\
+             <button type=\"button\" id=\"pacebtn\" class=\"edit-toggle\" title=\"선택 속도로 하이라이트만 진행(음성 없음)\">🏃 속도 읽기</button>\
+             <button type=\"button\" id=\"editbtn\" class=\"edit-toggle\">✏️ 편집</button>\
+           </div>\
+         </div></div>"
     ));
     // 청크 리딩/read-along에서 어휘 밑줄을 다시 그리도록 vocab 맵(소문자 변형 키→뜻)을 실어보낸다.
     if !vocab.is_empty() {
@@ -1971,6 +1977,14 @@ ul.gt-kids { margin-left: .55rem; padding-left: 1rem; }
 /* 리더 헤더(제목 + 편집 버튼) & 본문 편집 폼 */
 .reader-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .reader-head h2 { margin-right: auto; }
+/* 리더 컨트롤 '⚙️ 도구' 드롭다운 */
+.reader-tools { position: relative; }
+.reader-menu { position: absolute; right: 0; top: calc(100% + .4rem); z-index: 40;
+  display: flex; flex-direction: column; gap: .4rem; min-width: 13.5rem; padding: .55rem;
+  background: var(--glass); -webkit-backdrop-filter: blur(18px) saturate(160%); backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--brd); border-radius: 14px; box-shadow: var(--shadow); }
+.reader-menu[hidden] { display: none; }
+.reader-menu .edit-toggle, .reader-menu select { width: 100%; text-align: left; }
 .tts-audio { width: 100%; margin: .35rem 0 .8rem; }
 #ttsrate.edit-toggle { padding: .3rem .5rem; cursor: pointer; }
 .tts-readalong { white-space: pre-wrap; }
@@ -3012,6 +3026,14 @@ const READER_JS: &str = r#"
     if(shown&&shown!==m) shown.classList.remove('show');
     if(m){ m.classList.toggle('show'); }
   });
+
+  // '⚙️ 도구' 드롭다운: 열기/닫기, 안의 버튼 클릭 시 닫기, 바깥 클릭 시 닫기.
+  var toolsbtn=document.getElementById('toolsbtn'), toolsmenu=document.getElementById('toolsmenu');
+  if(toolsbtn && toolsmenu){
+    toolsbtn.addEventListener('click', function(e){ e.stopPropagation(); toolsmenu.hidden=!toolsmenu.hidden; });
+    toolsmenu.addEventListener('click', function(e){ if(e.target.tagName==='BUTTON') toolsmenu.hidden=true; });
+    document.addEventListener('click', function(e){ if(!toolsmenu.hidden && e.target!==toolsbtn && !toolsmenu.contains(e.target)) toolsmenu.hidden=true; });
+  }
 
   var FN={}, TRIG={};
   ("a an the of to in on at for with from by as into onto about over under above below after before between through during without within is are was were be been being am do does did have has had will would can could may might must shall should and or but nor so yet not no than then there here it its his her their our your my we you they them").split(' ').forEach(function(w){ FN[w]=1; });
