@@ -996,6 +996,7 @@ async fn book_page(State(st): State<AppState>) -> Result<Html<String>, AppError>
                      <div class=\"book-ask\">\
                        <input type=\"text\" class=\"ask-q\" placeholder=\"🤖 이 문장/문법에 대해 질문…\">\
                        <button type=\"button\" class=\"ask-btn\" data-id=\"{id}\">질문</button>\
+                       <button type=\"button\" class=\"note-copy\" title=\"문장+내 노트를 마크다운으로 복사\">📋 복사</button>\
                        <button type=\"submit\" class=\"note-save\">노트 저장</button>\
                      </div>\
                      <div class=\"ask-out\" hidden></div>\
@@ -1179,6 +1180,7 @@ async fn note_page(
              <button type=\"button\" class=\"chip active\" id=\"editbtn\">✏️ 편집</button>\
              <button type=\"button\" class=\"chip\" id=\"viewbtn\">👁 뷰어</button>\
              <button type=\"button\" class=\"chip primary\" id=\"savebtn\">💾 저장</button>\
+             <button type=\"button\" class=\"chip\" id=\"copybtn\" title=\"이 노트의 마크다운 전체를 복사\">📋 복사</button>\
              <span id=\"savestate\" class=\"muted\"></span>\
              <form method=\"post\" action=\"/notes/{id}/delete\" class=\"del noview\" onsubmit=\"return confirm('이 노트를 삭제할까요?')\"><button title=\"삭제\">🗑</button></form>\
            </div>\
@@ -2599,8 +2601,31 @@ const NOTE_JS: &str = r#"
       editBtn=document.getElementById('editbtn'),
       viewBtn=document.getElementById('viewbtn'),
       saveBtn=document.getElementById('savebtn'),
+      copyBtn=document.getElementById('copybtn'),
       state=document.getElementById('savestate');
   var dirty=false;
+
+  // 클립보드 복사(Clipboard API + execCommand 폴백).
+  function copyText(text){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function(resolve, reject){
+      try{
+        var t=document.createElement('textarea'); t.value=text;
+        t.style.position='fixed'; t.style.left='-9999px';
+        document.body.appendChild(t); t.focus(); t.select();
+        var ok=document.execCommand('copy'); document.body.removeChild(t);
+        ok ? resolve() : reject();
+      }catch(e){ reject(e); }
+    });
+  }
+  copyBtn.addEventListener('click', function(){
+    var t=title.value.trim();
+    var md=(t ? '# '+t+'\n\n' : '')+ta.value;
+    copyText(md).then(function(){ state.textContent='복사됨 ✓'; },
+                      function(){ state.textContent='복사 실패'; });
+  });
   function mark(){ dirty=true; state.textContent='● 저장 안 됨'; }
   ta.addEventListener('input', mark);
   title.addEventListener('input', mark);
@@ -2666,6 +2691,30 @@ const NOTE_JS: &str = r#"
 
 const BOOK_JS: &str = r#"
 (function(){
+  function copyText(text){
+    if(navigator.clipboard && navigator.clipboard.writeText){ return navigator.clipboard.writeText(text); }
+    return new Promise(function(resolve, reject){
+      try{
+        var t=document.createElement('textarea'); t.value=text;
+        t.style.position='fixed'; t.style.left='-9999px';
+        document.body.appendChild(t); t.focus(); t.select();
+        var ok=document.execCommand('copy'); document.body.removeChild(t);
+        ok ? resolve() : reject();
+      }catch(e){ reject(e); }
+    });
+  }
+  document.querySelectorAll('.note-copy').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var item=btn.closest('.book-item');
+      var sent=item.querySelector('.sentence'), ta=item.querySelector('textarea[name=note]');
+      var s=(sent?sent.textContent:'').trim(), n=(ta?ta.value:'').trim();
+      var md=(s?'> '+s+'\n\n':'')+n;
+      copyText(md).then(function(){ var o=btn.textContent; btn.textContent='복사됨 ✓';
+        setTimeout(function(){ btn.textContent=o; }, 1500); },
+        function(){ var o=btn.textContent; btn.textContent='복사 실패';
+        setTimeout(function(){ btn.textContent=o; }, 1500); });
+    });
+  });
   document.querySelectorAll('.ask-btn').forEach(function(btn){
     btn.addEventListener('click', function(){
       var form=btn.closest('.book-note'); if(!form) return;
